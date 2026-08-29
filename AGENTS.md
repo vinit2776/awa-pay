@@ -91,7 +91,7 @@ Extraction is deliberately last despite being the most impressive part. If the f
 
 ## Stack
 
-Next.js App Router, TypeScript, Tailwind. Postgres via Supabase in `ap-south-1` with Drizzle, RLS on a restricted runtime role. Cloudflare R2 for bills, presigned, versioned, object-locked, eight-year retention. WorkOS AuthKit, MFA required on any account holding the payer role. Resend for email, Web Push via VAPID. Vercel, region `bom1`.
+Next.js App Router, TypeScript, Tailwind. Postgres via Supabase in `ap-south-1` with Drizzle, RLS on a restricted runtime role. Cloudflare R2 for bills, presigned, versioned, object-locked, eight-year retention. Auth is hand-rolled in the application, not a hosted IdP — argon2id-hashed passwords, opaque DB-backed sessions (never JWT, so the payer role can be revoked on demand), TOTP MFA required on any account holding the payer role. Resend for email, Web Push via VAPID. Vercel, region `bom1`.
 
 Extraction is two-tier: `claude-haiku-4-5` on every bill, escalating to `claude-sonnet-5` when any decisive field falls below its confidence floor or the JSON fails to validate. Escalate on confidence, not only on failure — a confidently wrong amount is worse than a missing one. Store both the model's answer and the human's correction, so accuracy is measurable rather than assumed. The escalation rate is a metric, not a detail.
 

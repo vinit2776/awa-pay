@@ -33,14 +33,14 @@ One department. Real bills. No extraction, no vendor master, no comments, no not
 
 This is the only genuinely blocking work, and most of it is account creation that has to happen in a browser rather than here.
 
-**Slice 1 needs four services, not eight.** Notifications arrive in slice 2 and extraction in slice 4, so Resend and the Anthropic key are not blockers — leave `RESEND_API_KEY`, `EMAIL_FROM` and `ANTHROPIC_API_KEY` unset for now.
+**Slice 1 needs three services, not eight.** Notifications arrive in slice 2 and extraction in slice 4, so Resend and the Anthropic key are not blockers — leave `RESEND_API_KEY`, `EMAIL_FROM` and `ANTHROPIC_API_KEY` unset for now. There is no fourth, WorkOS-shaped service: auth is hand-rolled in the app, so it needs code in phase 2, not an account in phase 0.
 
 1. **Supabase project** named `awa-pay`, region `ap-south-1`. Not a schema inside an existing project — its own project, so nothing is shared with the parked app.
 2. **Two Postgres roles, two connection strings.** This is rule 1 in `AGENTS.md` and it is the single most important step in phase 0. Create a restricted runtime role; `DATABASE_URL` uses it and RLS applies to it in full. `DATABASE_URL_MIGRATIONS` uses the table owner, is used only by migration tooling, and is never imported by application code. Getting this wrong means RLS is silently off with no error to tell you.
 3. **Cloudflare R2 bucket** for bills, with a token scoped to that bucket alone. Turn on versioning and object lock at creation, and set retention to eight years — retrofitting retention onto existing objects is harder than setting it now.
-4. **WorkOS** environment, with live credentials rather than test-mode. Generate `WORKOS_COOKIE_PASSWORD` with `openssl rand -base64 32`. Registered redirect URIs need both `http://localhost:3000/callback` and the Vercel URL.
-5. **Vercel project** named `awa-pay` — matching the repo, not a fourth name — region `bom1`, linked to this repo. Set every variable there, across Production, Preview and Development. Never commit a value; never paste one into chat.
-6. **An error tracker.** Rule 5 says an unconfigured integration must fail visibly. That needs somewhere for failures to land, from day one rather than month thirty.
+4. **Vercel project** named `awa-pay` — matching the repo, not a fourth name — region `bom1`, linked to this repo. Set every variable there, across Production, Preview and Development. Never commit a value; never paste one into chat.
+5. **An error tracker.** Rule 5 says an unconfigured integration must fail visibly. That needs somewhere for failures to land, from day one rather than month thirty.
+6. **Two secrets for the auth system**, generated with `openssl rand -base64 32` each: `SESSION_SECRET` (signs the session cookie's integrity check — sessions themselves live in Postgres, opaque and revocable, never a JWT) and `MFA_ENCRYPTION_KEY` (encrypts stored TOTP seeds at rest, separate from `BANK_ACCOUNT_ENCRYPTION_KEY` so rotating one never touches the other).
 
 `.env.example` documents every name. Copy it to `.env.local` and fill in from Vercel.
 
@@ -64,9 +64,13 @@ The `event` table is append-only. Revoke `UPDATE` and `DELETE` from the runtime 
 
 ## Phase 2 — auth
 
-WorkOS AuthKit, middleware, callback route. Users are pre-provisioned, not self-serve: signing in with an email that has no matching user row fails loudly, because it means an admin step is missing.
+Hand-rolled, not a hosted IdP — deliberately, at this scale. No third-party account to provision, no redirect flow to debug, and one organisation means there is no tenant-to-organisation matching to do at sign-in either. Resist adding that indirection for a multi-tenancy that is explicitly aspirational.
 
-This is simpler here than it looks in most examples — one organisation means there is no tenant-to-organisation matching to do at sign-in. Resist adding that indirection for a multi-tenancy that is explicitly aspirational.
+- **Passwords:** argon2id (`@node-rs/argon2` — native binding, no hand-rolled crypto). Never bcrypt for new code; argon2id is the current OWASP-recommended default.
+- **Sessions:** a `session` table — random 32-byte token, SHA-256 hashed before it touches the database so a DB leak doesn't hand over live sessions, `httpOnly` + `Secure` + `SameSite=Lax` cookie. No JWT: a session must be revocable the instant a payer account is compromised or offboarded, and a signed token that's already out in a browser can't be un-issued.
+- **MFA:** TOTP (`otpauth` or equivalent RFC 6238 implementation), required at login for any account holding the payer role — this was WorkOS's job before and the requirement doesn't change with the provider. Store the seed encrypted with `MFA_ENCRYPTION_KEY`, generate a handful of single-use backup codes at enrollment, hashed the same way as passwords.
+- **Provisioning stays admin-only.** Users are pre-provisioned, not self-serve: signing in with an email that has no matching user row fails loudly, because it means an admin step is missing. There is no "sign up" route.
+- **Rate limit the login route.** A hand-rolled password check is a hand-rolled target for credential stuffing — this is the one piece a hosted IdP was quietly doing that now needs to be deliberate.
 
 ---
 
