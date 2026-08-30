@@ -18,12 +18,24 @@ jobs:
       - run: npm run lint
       # Build must precede typecheck: Next generates the typed-route helpers
       # (LayoutProps, PageProps) into .next/types during the build, and
-      # `tsc --noEmit` cannot resolve them until they exist.
+      # `tsc --noEmit` cannot resolve them until they exist. Build also
+      # needs real env vars now: collecting page data executes the (app)
+      # layout's module graph (src/db/runtime.ts, src/auth/env.ts), which
+      # throws on an unset var rather than deferring the check to request
+      # time — acceptable pre-launch, dev-project credentials only.
       - run: npm run build
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_URL_MIGRATIONS: ${{ secrets.DATABASE_URL_MIGRATIONS }}
+          SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
+          MFA_ENCRYPTION_KEY: ${{ secrets.MFA_ENCRYPTION_KEY }}
       - run: npm run typecheck
-      # The isolation gate (docs/START-HERE.md phase 1) runs against the
-      # real dev Supabase project — acceptable pre-launch, no real data yet.
+      # The isolation gate (docs/START-HERE.md phase 1) and the auth gate
+      # (phase 2) run against the real dev Supabase project — acceptable
+      # pre-launch, no real data yet.
       - run: npm run test
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           DATABASE_URL_MIGRATIONS: ${{ secrets.DATABASE_URL_MIGRATIONS }}
+          SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
+          MFA_ENCRYPTION_KEY: ${{ secrets.MFA_ENCRYPTION_KEY }}

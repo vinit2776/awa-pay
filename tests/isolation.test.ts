@@ -37,7 +37,13 @@ beforeAll(async () => {
 
   [requesterUser] = await dbOwner
     .insert(user)
-    .values({ name: `Isolation Test Requester ${nonce}`, email: `isolation-test-${nonce}@example.invalid` })
+    .values({
+      name: `Isolation Test Requester ${nonce}`,
+      email: `isolation-test-${nonce}@example.invalid`,
+      // Not exercised by this test — the isolation gate predates phase 2's
+      // auth columns and doesn't care about credentials, just a non-null value.
+      passwordHash: "unused-in-isolation-test",
+    })
     .returning({ id: user.id });
 
   await dbOwner.insert(roleGrant).values({
