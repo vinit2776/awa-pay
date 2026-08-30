@@ -13,5 +13,11 @@ export default defineConfig({
     // tests that share fixtures run sequentially rather than racing writes
     // against the one shared dev project.
     fileParallelism: false,
+    // Every withXScope call is its own transaction (a real round trip to
+    // the ap-south-1 dev project, not localhost), and auth flows chain
+    // several per call. The default 5s is comfortable on a low-latency
+    // connection but not from a GitHub Actions runner on the far side of
+    // the world from the database.
+    testTimeout: 30_000,
   },
 });
