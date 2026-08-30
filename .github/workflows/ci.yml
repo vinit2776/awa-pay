@@ -29,13 +29,22 @@ jobs:
           DATABASE_URL_MIGRATIONS: ${{ secrets.DATABASE_URL_MIGRATIONS }}
           SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
           MFA_ENCRYPTION_KEY: ${{ secrets.MFA_ENCRYPTION_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
       - run: npm run typecheck
-      # The isolation gate (docs/START-HERE.md phase 1) and the auth gate
-      # (phase 2) run against the real dev Supabase project — acceptable
-      # pre-launch, no real data yet.
+      # The isolation gate (docs/START-HERE.md phase 1), the auth gate
+      # (phase 2), and the capture gate (phase 3) run against the real dev
+      # Supabase project and real R2 bucket — acceptable pre-launch, no
+      # real data yet.
       - run: npm run test
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           DATABASE_URL_MIGRATIONS: ${{ secrets.DATABASE_URL_MIGRATIONS }}
           SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
           MFA_ENCRYPTION_KEY: ${{ secrets.MFA_ENCRYPTION_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}

@@ -20,7 +20,7 @@ const ROLES = new Set<Role>(schema.roleEnum.enumValues);
 
 export type ScopedTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
-class UnauthorizedGrantError extends Error {
+export class UnauthorizedGrantError extends Error {
   constructor(actorId: string, role: Role) {
     super(`Actor ${actorId} does not hold an active grant for role "${role}".`);
     this.name = "UnauthorizedGrantError";
