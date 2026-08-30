@@ -13,6 +13,23 @@ const eslintConfig = defineConfig([
     "build/**",
     "next-env.d.ts",
   ]),
+  {
+    // All env access under src/ funnels through src/db/runtime.ts (the
+    // restricted runtime role) — never the migrations connection, and never
+    // process.env read directly elsewhere. See AGENTS.md rule 1.
+    files: ["src/**/*.{ts,tsx}"],
+    ignores: ["src/db/schema/**", "src/db/runtime.ts"],
+    rules: {
+      "no-restricted-properties": [
+        "error",
+        {
+          object: "process",
+          property: "env",
+          message: "Do not read process.env directly in src/. Import from src/db/runtime.ts.",
+        },
+      ],
+    },
+  },
 ]);
 
 export default eslintConfig;

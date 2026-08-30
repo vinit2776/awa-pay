@@ -21,3 +21,9 @@ jobs:
       # `tsc --noEmit` cannot resolve them until they exist.
       - run: npm run build
       - run: npm run typecheck
+      # The isolation gate (docs/START-HERE.md phase 1) runs against the
+      # real dev Supabase project — acceptable pre-launch, no real data yet.
+      - run: npm run test
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_URL_MIGRATIONS: ${{ secrets.DATABASE_URL_MIGRATIONS }}
