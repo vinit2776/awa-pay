@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import { bigint, check, index, integer, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { requestFileKindEnum } from "./enums";
 import { request } from "./request";
 import { user } from "./user";
 
@@ -10,6 +11,10 @@ export const requestFile = pgTable(
     requestId: uuid("request_id")
       .notNull()
       .references(() => request.id),
+    // 'bill' is the requester's capture; 'payment_advice' is the payer's
+    // optional attachment at pay time — same presign/upload/RLS machinery,
+    // reused rather than duplicated.
+    kind: requestFileKindEnum("kind").notNull().default("bill"),
     storageKey: text("storage_key").notNull(),
     pageNo: integer("page_no").notNull().default(1),
     mime: text("mime").notNull(),

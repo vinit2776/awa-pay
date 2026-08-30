@@ -9,3 +9,6 @@ export * from "./event";
 export * from "./session";
 export * from "./mfaBackupCode";
 export * from "./loginAttempt";
+export * from "./headOfAccount";
+export * from "./accounting";
+export * from "./payment";

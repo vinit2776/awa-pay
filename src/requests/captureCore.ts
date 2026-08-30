@@ -62,6 +62,13 @@ export async function submitRequest(params: SubmitRequestParams): Promise<Submit
         // the row it names — no separate round trip to race or skip. See
         // drizzle/migrations/0004_request_ref_sequence.sql.
         ref: sql`'REQ-' || nextval('request_ref_seq')`,
+        // Nothing transitions raised -> awaiting_approval separately — there
+        // is no "submit for approval" step distinct from capture itself, so
+        // a freshly captured request goes straight to the approver's queue.
+        // 'raised' (the schema default) is reserved for exactly one other
+        // case: a request an approver has returned to the requester for
+        // correction. See src/requests/transitions.ts.
+        stage: "awaiting_approval",
         departmentId: params.departmentId,
         raisedBy: params.userId,
         currency,
