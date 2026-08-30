@@ -6,3 +6,6 @@ export * from "./roleGrant";
 export * from "./request";
 export * from "./requestFile";
 export * from "./event";
+export * from "./session";
+export * from "./mfaBackupCode";
+export * from "./loginAttempt";

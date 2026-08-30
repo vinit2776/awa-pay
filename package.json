@@ -11,11 +11,14 @@
     "test": "vitest run",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
-    "db:studio": "drizzle-kit studio"
+    "db:studio": "drizzle-kit studio",
+    "db:seed-user": "tsx scripts/seed-user.ts"
   },
   "dependencies": {
+    "@node-rs/argon2": "^2.2.0",
     "drizzle-orm": "^0.45.2",
     "next": "16.3.3",
+    "otpauth": "^9.5.1",
     "postgres": "^3.4.9",
     "react": "19.2.8",
     "react-dom": "19.2.8"
@@ -30,6 +33,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.3.3",
     "tailwindcss": "^4",
+    "tsx": "^4.23.13",
     "typescript": "^5",
     "vitest": "^4.1.11"
   }

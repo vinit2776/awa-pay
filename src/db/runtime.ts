@@ -81,6 +81,55 @@ export async function withGrantScope<T>(
 }
 
 /**
+ * For reads where identity is known but no specific role is being
+ * asserted — reading one's own role_grant rows during login (before a
+ * role is chosen), creating/updating one's own session row, writing a
+ * pre-role-selection event(object_type='auth') row. Sets app.actor_id
+ * only; app.actor_role stays unset. Legitimate because role_grant_select's
+ * own-row branch (`user_id = app_actor_id()`) doesn't require actor_role —
+ * see drizzle/migrations/0001_rls_and_grants.sql.
+ */
+export async function withActorScope<T>(actorId: string, fn: (tx: ScopedTx) => Promise<T>): Promise<T> {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`select set_config('app.actor_id', ${actorId}, true)`);
+    return fn(tx);
+  });
+}
+
+/**
+ * The very first read of the login flow: looking a user up by email
+ * before any identity exists at all. Sets app.presented_login_email (and
+ * app.presented_client_ip, for the login_attempt rate-limit read) — see
+ * the user_select and login_attempt_select policies in
+ * drizzle/migrations/0003_auth_rls_and_grants.sql.
+ */
+export async function withPreAuthLookup<T>(
+  presented: { email: string; clientIp: string },
+  fn: (tx: ScopedTx) => Promise<T>,
+): Promise<T> {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`select set_config('app.presented_login_email', ${presented.email}, true)`);
+    await tx.execute(sql`select set_config('app.presented_client_ip', ${presented.clientIp}, true)`);
+    return fn(tx);
+  });
+}
+
+/**
+ * Session-token verification, before identity is known — the token
+ * itself is the credential. Sets app.presented_token_hash — see
+ * session_select in drizzle/migrations/0003_auth_rls_and_grants.sql.
+ */
+export async function withPresentedSessionToken<T>(
+  tokenHash: string,
+  fn: (tx: ScopedTx) => Promise<T>,
+): Promise<T> {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`select set_config('app.presented_token_hash', ${tokenHash}, true)`);
+    return fn(tx);
+  });
+}
+
+/**
  * Gate test only — never call from application code. Opens a transaction
  * against DATABASE_URL with neither app.actor_id nor app.actor_role set, to
  * prove RLS fails closed on an unscoped query. See tests/isolation.test.ts.
