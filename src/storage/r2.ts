@@ -1,8 +1,9 @@
-import { HeadObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { GetObjectCommand, HeadObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { R2_ACCESS_KEY_ID, R2_ACCOUNT_ID, R2_BUCKET_NAME, R2_SECRET_ACCESS_KEY } from "./env";
 
 const UPLOAD_URL_EXPIRY_SECONDS = 10 * 60; // long enough for a multi-MB PUT over 3G
+const DOWNLOAD_URL_EXPIRY_SECONDS = 5 * 60; // short-lived, view/download only
 
 // forcePathStyle is required for R2: its URL shape is
 // https://<account>.r2.cloudflarestorage.com/<bucket>/<key> (path-style).
@@ -21,6 +22,16 @@ const client = new S3Client({
 export async function presignPutUrl(storageKey: string, mime: string): Promise<string> {
   const command = new PutObjectCommand({ Bucket: R2_BUCKET_NAME, Key: storageKey, ContentType: mime });
   return getSignedUrl(client, command, { expiresIn: UPLOAD_URL_EXPIRY_SECONDS });
+}
+
+// Zero authorization inside this function, by design, matching
+// presignPutUrl above: the security boundary is entirely upstream — a
+// caller only ever has a storageKey to sign because it came out of an
+// RLS-scoped query inside withGrantScope (see
+// src/app/(app)/requests/[id]/page.tsx, the only caller in phase 4).
+export async function presignGetUrl(storageKey: string): Promise<string> {
+  const command = new GetObjectCommand({ Bucket: R2_BUCKET_NAME, Key: storageKey });
+  return getSignedUrl(client, command, { expiresIn: DOWNLOAD_URL_EXPIRY_SECONDS });
 }
 
 // The server-side corroboration for "checksum on arrival" (see

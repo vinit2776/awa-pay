@@ -24,3 +24,16 @@ export const requestStageEnum = pgEnum("request_stage", [
   "on_hold",
   "rejected",
 ]);
+
+export const paymentModeEnum = pgEnum("payment_mode", ["neft", "rtgs", "imps", "upi", "cheque", "other"]);
+
+export const holdSubReasonEnum = pgEnum("hold_sub_reason", [
+  "short_supply",
+  "damaged",
+  "quality_rejected",
+  "rate_dispute",
+  "awaiting_credit_note",
+  "service_not_rendered",
+]);
+
+export const requestFileKindEnum = pgEnum("request_file_kind", ["bill", "payment_advice"]);

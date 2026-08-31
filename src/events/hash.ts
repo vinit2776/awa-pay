@@ -31,7 +31,28 @@ export type EventHashFields = {
   reason: string | null;
 };
 
+// Plain JSON.stringify is order-sensitive to object key insertion order.
+// Postgres jsonb does not preserve that order on read-back, so recomputing
+// a hash from a row fetched via SELECT (exactly what verifying the chain
+// requires) would not reproduce the hash computed before insert, even
+// though nothing was tampered with. Sorting object keys recursively makes
+// the serialization deterministic regardless of jsonb's own ordering.
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(canonicalize);
+  }
+  if (value !== null && typeof value === "object") {
+    const sortedKeys = Object.keys(value as Record<string, unknown>).sort();
+    const result: Record<string, unknown> = {};
+    for (const key of sortedKeys) {
+      result[key] = canonicalize((value as Record<string, unknown>)[key]);
+    }
+    return result;
+  }
+  return value;
+}
+
 export function computeEventHash(fields: EventHashFields, prevHash: string | null): string {
-  const canonical = JSON.stringify({ ...fields, prevHash });
+  const canonical = JSON.stringify(canonicalize({ ...fields, prevHash }));
   return createHash("sha256").update(canonical).digest("hex");
 }
