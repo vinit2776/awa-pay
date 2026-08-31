@@ -50,6 +50,20 @@
       "when": 1788112841033,
       "tag": "0006_desks_rls_and_grants",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1788177226906,
+      "tag": "0007_conversation_schema",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1788178000000,
+      "tag": "0008_conversation_rls_and_grants",
+      "breakpoints": true
     }
   ]
 }

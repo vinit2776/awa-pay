@@ -4,6 +4,7 @@ export * from "./department";
 export * from "./user";
 export * from "./roleGrant";
 export * from "./request";
+export * from "./comment";
 export * from "./requestFile";
 export * from "./event";
 export * from "./session";
