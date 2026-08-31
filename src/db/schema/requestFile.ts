@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import { bigint, check, index, integer, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { comment } from "./comment";
 import { requestFileKindEnum } from "./enums";
 import { request } from "./request";
 import { user } from "./user";
@@ -12,9 +13,12 @@ export const requestFile = pgTable(
       .notNull()
       .references(() => request.id),
     // 'bill' is the requester's capture; 'payment_advice' is the payer's
-    // optional attachment at pay time — same presign/upload/RLS machinery,
-    // reused rather than duplicated.
+    // optional attachment at pay time; 'comment_attachment' is anything
+    // dropped into the conversation — all three share this same
+    // presign/upload/RLS machinery rather than duplicating it per kind.
     kind: requestFileKindEnum("kind").notNull().default("bill"),
+    // Only set for kind = 'comment_attachment'.
+    commentId: uuid("comment_id").references(() => comment.id),
     storageKey: text("storage_key").notNull(),
     pageNo: integer("page_no").notNull().default(1),
     mime: text("mime").notNull(),

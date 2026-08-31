@@ -1,0 +1,130 @@
+# Start here — handoff for slice 2
+
+You are picking up a project with slice 1 complete: auth, capture, and the four desks (approve, account, pay) are merged, with a hash-chained event trail proving every stage transition. This document is the state of play and the order of work for slice 2. Read it, then re-read `AGENTS.md`, then open `docs/concept-v2.html` sections 01, 04, 07, 11, 15 and 16 in a browser.
+
+Nothing here needs to be recovered from a conversation. If something is not written down in this repository, it was not decided.
+
+---
+
+## Slice 2, in one sentence
+
+Everyone already touching a request — requester, approver, accountant, payer, super admin — can talk about it in place, ask and answer questions that freeze it honestly rather than silently, nudge whoever's sitting on it, and hear about all of it by email without opening the app.
+
+No vendor master, no computed flags (ageing, unanswered-query, repeat-vendor, bank-change — those are slice 3), no web push, no health console (slice 4). One department still, real bills still.
+
+---
+
+## Three things found and resolved first
+
+**1. Withdraw doesn't exist, and there's currently no way to close an abandoned returned request.** The brief's "returned" screen (§04) puts a Withdraw button next to Resubmit, and lists Withdrawn as a fourth terminal outcome alongside Return/Hold/Reject. Nothing in the schema, `src/requests/transitions.ts`, or slice 1's planning docs ever built it — a genuine gap, not something deferred on purpose. Folded into phase 6: one enum value, one `TRANSITIONS` entry, one button, and it shares the freeze check queries need anyway. The alternative was leaving a requester whose bill was rightly returned no way to close it out.
+
+**2. Live bug: the resubmit flow never works on a request's first return — and it's three places, not one.** `revision > 1` gates all three of: the resubmit link on `src/app/(app)/requests/[id]/page.tsx`, the `notFound()` guard on `src/app/(app)/requests/[id]/resubmit/page.tsx`, and — the real problem — `src/requests/resubmitCore.ts`'s own validation (`if (req.stage !== "raised" || req.revision <= 1) return { ok: false, ... }`). Only `resubmitRequest` bumps `revision`; `returnRequestToRequester` never does. So on a request's very first return (`revision` still 1), not only is the link invisible, but the resubmit *action itself* refuses if somehow invoked directly. Phase 4's own test suite never caught this because `tests/desks.test.ts` calls `resubmitRequest` (the transition) directly, bypassing `resubmitCore.ts` entirely. Confirmed during phase 5 by tracing all three call sites, corrected from the original one-line description. Fixed in phase 6, in the same pass that adds Withdraw: drop `revision > 1`/`revision <= 1` from all three — `stage === "raised"` already fully means "returned for correction."
+
+**3. `comment`/`query`/`nudge` RLS: verified empirically (via `psql`, as `app_runtime`, with a company-excluded payer session) that a plain department-scope `EXISTS` join to `request` — the same shape `accounting_select`/`payment_select` already use — already inherits `request_select`'s own payer company check for free, because Postgres RLS applies to `request` transitively inside any subquery against it, for whichever role is running the outer query. So SELECT policies on the three new tables **do not** need an explicit payer/company branch of their own (correcting the original plan's assumption); INSERT policies keep one anyway, as defense-in-depth matching `payment_insert`'s own existing style, not because it's required for correctness. See phase 5's `0008_conversation_rls_and_grants.sql` for the verified shape and its own comment explaining why.
+
+**4. `app_users_with_scope` (the reverse "who has scope" lookup) is needed starting phase 5, not phase 8.** Comment `@mention` candidate resolution needs the exact same reverse lookup phase 8's email recipients were going to introduce it for — moved into phase 5's migration (`0008`) instead, with phase 8 simply reusing the already-existing function. One function, first consumer wins.
+
+---
+
+## Design decisions
+
+**Query freeze.** One check inside `runTransition` (`src/requests/transitions.ts`), right after the row lock and before the `fromStages` check: refuse if any `query` row for this request has `resolved_at IS NULL`. Applies uniformly to all 10 pre-existing transitions *and* the new `withdraw` — no per-transition exemption, since a query can legitimately be raised at any stage a request passes through. Raising is open to requester/approver/accountant/payer/super_admin (not developer) with scope over the request, regardless of current stage — resolved via `resolveViewerRole`'s existing try-each-role pattern (`src/requests/viewerRole.ts`). Answering requires holding one of the query's `directedAt` roles (an array of roles, not user ids — the same department-pool model already used everywhere else); RLS enforces this independently of the app-level check, not as a substitute for it. Concurrency: `raiseQuery` takes `SELECT request ... FOR UPDATE` purely as a mutex against `runTransition`'s own lock on the same row; `answerQuery` takes `SELECT query ... FOR UPDATE` so a second concurrent answer sees `resolved_at` already set and fails cleanly. Lock ordering rule, followed everywhere in this slice: `request` locked before any child row.
+
+**`appendEvent`.** The hash-chain-append tail of `runTransition` (read latest hash under lock → compute → insert) is extracted into `src/events/append.ts`, reused by `runTransition` itself and by the new query/nudge modules — neither is a stage transition (no `fromStages`/`toStage`), so they can't go through `runTransition` directly, but still need the same race-free append, under a lock they take themselves first. Comments do **not** call this: the brief's own Trail mockup (§07) never shows a comment in it, only structural events (Raised, Query, Approved, Accounted, Paid); `comment` is already its own append-only table (no `UPDATE`/`DELETE` grant), so it doesn't need a second shadow copy in `event`.
+
+**Withdraw.** `withdraw: { requiredRole: "requester", fromStages: ["raised"], toStage: "withdrawn", eventType: "request.withdrawn" }`, threaded through the same engine — inherits the freeze check for free. Ownership check mirrors `resubmitCore.ts` exactly (`req.raisedBy !== actorId` → reject), since `request_update`'s RLS for the requester role is department-pool-wide at `stage = 'raised'`, not "mine only." New `requestStageEnum` value `'withdrawn'`, not a shared `'rejected'` bucket with a discriminator column — matches this repo's existing vocabulary discipline (fixed, distinct words for fixed, distinct outcomes).
+
+**Comments.** `comment(id, requestId, author, roleAtTime, body, mentions uuid[], at, editedAt)`. Attachments extend `request_file` (new `kind: 'comment_attachment'`, nullable `commentId` FK) rather than a new table — `request_file` already proved this exact pattern for a one-off, no-pages attachment with `payment_advice`. `@Full Name` mentions are resolved against users holding any active grant with scope over the request (via a SQL helper shared with notification recipient resolution, phase 8), longest-name-first to avoid partial-match collisions, stored as `uuid[]`, resolved atomically inside the same insert transaction as the comment itself. `editedAt` is reserved but unwritten this phase — no `UPDATE` grant on `comment` yet. Editing is a real design question (rewrite in place? flag as edited in the trail? can a mention be silently added or removed after posting?) deferred with a stated reason, not rushed into a corner of phase 5.
+
+**Nudges.** `nudge(id, requestId, fromUser, fromRole, toRole, at)`. `toRole` — not a specific user — resolved via a small `STAGE_OWNER_ROLE` map (`raised → requester`, `awaiting_approval → approver`, `with_accounts → accountant`, `to_pay → payer`, `on_hold → approver`, terminal stages → null, refuse to nudge). The rate limit ("one per person per request per day") is a **database constraint**, not a query-time check, per the exact precedent AGENTS.md rule 7 already sets for duplicate-bill prevention: `UNIQUE (from_user, request_id, ((at AT TIME ZONE 'Asia/Kolkata')::date))` — an IST calendar day, deliberately, since this is an India-only org and a UTC day would flip at 5:30am local time. The app does a friendly pre-check first, then catches Postgres error `23505` on a genuine race and translates it to the same message — the index is the actual enforcement, the pre-check is UX. Nudges appear in the Trail via `appendEvent`.
+
+**Email notifications.** `src/notifications/env.ts` (added to the existing `no-restricted-properties` ESLint allowlist alongside `src/auth/env.ts`/`src/storage/env.ts`) plus `src/notifications/email.ts` wrapping `resend` (new dependency) directly — no service-abstraction layer, matching how `otpauth`/`@node-rs/argon2` are used inline elsewhere in this codebase. Bound by an 8-second timeout via `Promise.race`, never throws into its caller (catches everything, logs via `console.error`), and sends only from thin `"use server"` action wrappers **after** their transaction has committed — never from a pure core — per AGENTS.md rule 4's own stated reasoning: a slow or failing provider must never roll back an approval. `RESEND_API_KEY` unset (true in CI today, per `docs/START-HERE.md` phase 0) is treated as rule 5's unconfigured-integration case, not a separate test-mode flag — CI already runs with it unset, so that path is exercised for free on every run. "Fails visibly at the edge" is satisfied this slice by `console.error` landing in Vercel's own log capture; a real health surface with a status table is explicitly slice 4's job, not invented here.
+
+Reverse recipient lookup ("which users hold role X with scope over department Y") is impossible under current RLS — an ordinary actor can only see their own `role_grant` rows (`role_grant_select`'s policy). A new, narrowly-scoped `SECURITY DEFINER` SQL function, `app_users_with_scope(roles[], departmentId, companyId)`, mirrors the existing `app_has_department_scope`/`app_has_company_scope` helpers (`0001_rls_and_grants.sql`) but inverted — "which actors," not "does this one actor" — and returns only `user_id` values. This is the one genuinely novel, security-relevant piece of this slice: `SECURITY DEFINER` runs with the migrations-role owner's privileges, exempt from RLS by the exact mechanism AGENTS.md rule 1 already documents, used here deliberately and narrowly (only `user_id`s come back; who-holds-which-role is no more sensitive than the org's already-open `user_select` policy at this scale). `SET search_path = public` is set explicitly on the function to close the standard Postgres search-path-hijack vector for `SECURITY DEFINER` functions. Created in phase 5's migration (`0008`, not `0014` — see "three/four things found" above), since comment `@mention` resolution needs it first; phase 8 reuses it unchanged.
+
+Per-trigger recipients (acting user's own id always excluded):
+
+| Trigger | Recipients |
+|---|---|
+| `approve` | Accountants scoped to the department |
+| `returnToRequester`, `hold`, `reject` | The requester — brief's own words, "every exit notifies the requester" |
+| `account` | Payers scoped to department + company — the first point company can actually filter |
+| `returnToApprover` | Approvers scoped to the department |
+| `pay` | The requester — an inference beyond the brief's literal decline-language; **flagged for explicit confirmation before phase 8 ships**, not assumed silently |
+| `returnToAccounts` | Accountants scoped to department + company |
+| `resubmit` | Approvers scoped to the department (no per-approver routing — consistent with phase 4's own deferral of resubmit-after-reject) |
+| `releaseHold`, `withdraw` | Nobody — no new owner, stated as a deliberate skip |
+| Query raised | The query's `directedAt` roles |
+| Query answered | The original raiser |
+| Nudge sent | The nudge's own `toRole` |
+| Comment `@mention` | The resolved `mentions` on that comment |
+
+---
+
+## Phase 5 — comments & the conversation panel
+
+- `comment(id, requestId, author, roleAtTime, body, mentions uuid[], at, editedAt)` — migration `0007_conversation_schema.sql`. `requestFileKindEnum` gains `'comment_attachment'`; `request_file` gains a nullable `commentId` FK.
+- RLS — migration `0008_conversation_rls_and_grants.sql`: SELECT via a plain department-scope `EXISTS` join (company scope inherited transitively through `request`'s own RLS — see "things found" above), INSERT keeps an explicit payer/company check as defense-in-depth. `GRANT SELECT, INSERT` only — no `UPDATE`/`DELETE`. Also creates `app_users_with_scope` (moved here from phase 8) + `GRANT EXECUTE`.
+- `src/conversation/mentions.ts` (pure, `resolveMentions(body, candidates)`), `src/conversation/commentsCore.ts` (pure-core `postComment`), `src/app/(app)/requests/[id]/actions.ts` gains `postCommentAction` and `requestCommentAttachmentUploadSlot` (reusing `src/storage/uploadSlot.ts`'s `mintUploadSlot`), `src/app/(app)/requests/[id]/ConversationPanel.tsx` (new), `page.tsx` renders it.
+
+**Done means:** a comment posted by any in-scope role is visible to every other in-scope role immediately (verified both in `tests/comments.test.ts`, against the real dev DB, and live in a browser); `@Name` resolves correctly, including a same-first-name collision case (longest-name-first ordering tested explicitly — deliberately does **not** call `headObjectContentLength` on comment attachments, matching `resubmitRequest`'s existing precedent for its own bill-replacement attachments, not `payRequest`'s advice-attachment precedent; a real, pre-existing inconsistency between those two, left as found, not fixed as a phase-5 side quest); an attachment uploads and renders through a presigned GET (verified live: a synthetic PDF attached to a real comment on a `paid`, closed request, confirming "the thread stays open forever"); an excluded role (tested: an approver scoped to a different department) gets neither the request page nor any comment row, verified against real RLS via the seeded-fixture test suite; tests delete `comment` (and its `request_file` children, and `event`) before `request` in `afterAll`.
+
+---
+
+## Phase 6 — queries, the freeze, and Withdraw
+
+- `'withdrawn'` added to `requestStageEnum` — migration `0009_request_stage_add_withdrawn.sql`, its own migration alone (Postgres won't let a transaction use an enum value it just added, so this must land and commit before anything else references it).
+- `query(id, requestId, raisedBy, raisedAsRole, directedAt role[], question, answeredBy, answeredAsRole, answer, resolvedAt, at)` — migration `0010_queries_schema.sql`.
+- RLS — migration `0011_queries_rls_and_grants.sql`: SELECT/INSERT mirroring the same payer-only asymmetry; UPDATE's `USING` requiring `resolved_at IS NULL AND app_actor_role() = ANY(directed_at)`, `WITH CHECK` requiring `answered_by`/`answered_as_role` match the actor and `resolved_at IS NOT NULL`.
+- `src/events/append.ts` (the extracted `appendEvent`), `src/requests/transitions.ts` (freeze check, the `withdraw` transition + `withdrawRequest`, rewritten to call `appendEvent`), `src/conversation/queriesCore.ts` (`raiseQuery`, `answerQuery`), action wrappers, `QueryPanel.tsx`, `page.tsx` (the resubmit-link fix, the Withdraw button, queries rendered interleaved in the Trail), `src/events/render.ts` gains `request.query_raised`, `request.query_answered`, `request.withdrawn`.
+
+**Done means:** an open query freezes all 12 transitions with the same clear error, verified live; answering by an in-`directedAt` role unfreezes immediately; a role outside `directedAt` is RLS-rejected attempting to answer; two tabs racing to answer the same query — one wins, one gets "already answered," verified against the real dev DB; a withdrawn request appears in no queue; the resubmit link now appears on a request's very first return.
+
+---
+
+## Phase 7 — nudges
+
+- `nudge(id, requestId, fromUser, fromRole, toRole, at)` — migration `0012_nudges_schema.sql`, with `UNIQUE (from_user, request_id, ((at AT TIME ZONE 'Asia/Kolkata')::date))`.
+- RLS — migration `0013_nudges_rls_and_grants.sql`: same asymmetric SELECT/INSERT shape, append-only grants (no `UPDATE`/`DELETE`), matching `event`.
+- `src/requests/stageOwner.ts` (`STAGE_OWNER_ROLE`), `src/conversation/nudgesCore.ts` (`sendNudge`: pre-check, then insert, catching Postgres `23505` on a genuine race), action wrapper, the amber "◔ Nudge" button in `ConversationPanel.tsx`, `render.ts` gains `request.nudged`.
+
+**Done means:** a nudge appears in the Trail immediately; a second same-IST-day attempt by the same person is rejected with a friendly message; a nudge attempted on a closed/terminal-stage request (where `STAGE_OWNER_ROLE` is null) is refused; the unique index itself is verified directly in `psql` with two concurrent inserts, not only through the app's pre-check.
+
+---
+
+## Phase 8 — email notifications, wired retroactively
+
+- `app_users_with_scope` already exists (created in phase 5's `0008` migration) — phase 8 has no migration of its own for it, just builds `recipients.ts` on top of the existing function.
+- `src/notifications/env.ts`, `email.ts`, `recipients.ts` (implements the recipient table above). `eslint.config.mjs` gains the allowlist entry. `package.json` gains `resend`. Every action-wrapper file this slice touches sends after its transition's `ok` check, never before.
+
+**Done means:** every row of the recipient table verified live against the real dev DB with a real (sandboxed) Resend key — the right people, and only the right people; a run with `RESEND_API_KEY` unset produces zero thrown errors and one `console.error` per suppressed send; a forced-timeout throwaway script (not part of the shipped suite, which stays real-DB-only) confirms a slow send never delays or rolls back its triggering transaction; a full mobile walkthrough reading actual inbox delivery for at least two legs (e.g. approve, pay).
+
+---
+
+## Done means, for the whole slice
+
+- Two people can hold an actual conversation about a request, including after it's closed.
+- A query genuinely freezes the request — every transition refuses cleanly, not silently — until it's answered by someone entitled to answer it.
+- A nudge reaches whoever currently owns the stage, at most once per person per day, and shows up where the trail shows everything else.
+- Every stage handover, decline, query and nudge reaches the right inboxes by email, and a missing or failing provider never breaks the action that triggered it.
+- CI green, deployed, and the same "someone other than you put a real conversation through it" bar slice 1 set for itself.
+
+---
+
+## Decisions already made — do not reopen
+
+Query freeze applies uniformly across every transition, no per-transition exemption. `directedAt`/`toRole` are roles, not specific user ids — the same department-pool model as everywhere else. Comments get no `event` row; queries and nudges do. Comment editing is deferred, not built. Comment attachments extend `request_file`, not a new table. Company scope on `comment`/`query`/`nudge` mirrors `request_select`'s payer-only asymmetry, not a blanket rule either way. Email sends happen strictly after the triggering transaction commits, from the action-wrapper layer only, never from a pure core. `RESEND_API_KEY` absence is rule 5's unconfigured-integration case, not a bespoke test-mode flag.
+
+Deferred on purpose: computed flags (ageing, unanswered-query, due-date, repeat-vendor, bank-change — slice 3). Web push and the health console (slice 4). Reject-duplicate's `linked_request` wiring (needs the vendor master, slice 3). Resubmit-after-reject's per-approver routing (still deferred from phase 4, unchanged here). WhatsApp nudges (brief's own "obvious later addition," not this slice).
+
+Still open, worth a two-line confirmation before phase 8 ships: whether `pay` should notify the requester — the brief only explicitly mandates notification for decline outcomes; notifying on successful payment too is a reasonable extension, not a literal requirement.
+
+## Where to look things up
+
+| Question | Answer lives in |
+|---|---|
+| What do queries, comments and nudges look like on screen? | `docs/concept-v2.html` sections 01, 04, 07 |
+| Who can converse, and where? | `AGENTS.md`, and section 11 of the brief |
+| What does the new schema look like? | Section 15 of the brief, and this document's phase-by-phase breakdown |
+| Why these specific RLS/notification design choices? | This document's "Design decisions" section |
+| What was decided and what is deferred? | This document's final section |

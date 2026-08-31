@@ -36,4 +36,4 @@ export const holdSubReasonEnum = pgEnum("hold_sub_reason", [
   "service_not_rendered",
 ]);
 
-export const requestFileKindEnum = pgEnum("request_file_kind", ["bill", "payment_advice"]);
+export const requestFileKindEnum = pgEnum("request_file_kind", ["bill", "payment_advice", "comment_attachment"]);

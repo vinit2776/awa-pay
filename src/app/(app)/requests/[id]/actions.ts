@@ -3,6 +3,7 @@
 import { headers } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { verifySession } from "@/auth/dal";
+import { postComment, type CommentAttachment, type PostCommentResult } from "@/conversation/commentsCore";
 import {
   accountRequest,
   approveRequest,
@@ -39,6 +40,23 @@ async function afterTransition(requestId: string, result: TransitionResult): Pro
 export async function requestAdviceUploadSlot(mime: string): Promise<UploadSlotResult> {
   await verifySession();
   return mintUploadSlot(mime);
+}
+
+export async function requestCommentAttachmentUploadSlot(mime: string): Promise<UploadSlotResult> {
+  await verifySession();
+  return mintUploadSlot(mime);
+}
+
+export async function postCommentAction(
+  requestId: string,
+  input: { body: string; attachments: CommentAttachment[] },
+): Promise<PostCommentResult> {
+  const session = await verifySession();
+  const result = await postComment({ userId: session.userId, requestId, body: input.body, attachments: input.attachments });
+  if (result.ok) {
+    revalidatePath(`/requests/${requestId}`);
+  }
+  return result;
 }
 
 export async function approveAction(

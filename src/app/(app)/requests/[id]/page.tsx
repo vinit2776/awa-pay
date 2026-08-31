@@ -2,7 +2,7 @@ import { and, asc, desc, eq } from "drizzle-orm";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { withGrantScope } from "@/db/runtime";
-import { accounting, company, department, event, headOfAccount, payment, requestFile, user } from "@/db/schema";
+import { accounting, comment, company, department, event, headOfAccount, payment, requestFile, user } from "@/db/schema";
 import { renderEventSummary } from "@/events/render";
 import { formatMinorUnits } from "@/lib/money";
 import { resolveViewerRole } from "@/requests/viewerRole";
@@ -10,6 +10,7 @@ import { presignGetUrl } from "@/storage/r2";
 import { verifySession } from "@/auth/dal";
 import { ApproverPanel } from "./ApproverPanel";
 import { AccountantPanel } from "./AccountantPanel";
+import { ConversationPanel, type ConversationEntry } from "./ConversationPanel";
 import { PayerPanel } from "./PayerPanel";
 
 export default async function RequestDetailPage({ params }: PageProps<"/requests/[id]">) {
@@ -22,30 +23,60 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
   }
   const { role, request: req } = resolved;
 
-  const [department_, files, accountingRows, paymentRow, events] = await withGrantScope(session.userId, role, async (tx) => {
-    const [dept] = await tx.select().from(department).where(eq(department.id, req.departmentId)).limit(1);
-    const bills = await tx
-      .select()
-      .from(requestFile)
-      .where(and(eq(requestFile.requestId, req.id), eq(requestFile.kind, "bill")))
-      .orderBy(asc(requestFile.pageNo));
-    const accountingHistory = await tx
-      .select()
-      .from(accounting)
-      .where(eq(accounting.requestId, req.id))
-      .orderBy(desc(accounting.accountedAt));
-    const [pay] = await tx.select().from(payment).where(eq(payment.requestId, req.id)).limit(1);
-    const eventRows = await tx
-      .select({ event, actorName: user.name })
-      .from(event)
-      .leftJoin(user, eq(user.id, event.actor))
-      .where(eq(event.requestId, req.id))
-      .orderBy(asc(event.at));
-    return [dept, bills, accountingHistory, pay ?? null, eventRows];
-  });
+  const [department_, files, commentAttachments, accountingRows, paymentRow, events, comments] = await withGrantScope(
+    session.userId,
+    role,
+    async (tx) => {
+      const [dept] = await tx.select().from(department).where(eq(department.id, req.departmentId)).limit(1);
+      const bills = await tx
+        .select()
+        .from(requestFile)
+        .where(and(eq(requestFile.requestId, req.id), eq(requestFile.kind, "bill")))
+        .orderBy(asc(requestFile.pageNo));
+      const attachments = await tx
+        .select()
+        .from(requestFile)
+        .where(and(eq(requestFile.requestId, req.id), eq(requestFile.kind, "comment_attachment")))
+        .orderBy(asc(requestFile.createdAt));
+      const accountingHistory = await tx
+        .select()
+        .from(accounting)
+        .where(eq(accounting.requestId, req.id))
+        .orderBy(desc(accounting.accountedAt));
+      const [pay] = await tx.select().from(payment).where(eq(payment.requestId, req.id)).limit(1);
+      const eventRows = await tx
+        .select({ event, actorName: user.name })
+        .from(event)
+        .leftJoin(user, eq(user.id, event.actor))
+        .where(eq(event.requestId, req.id))
+        .orderBy(asc(event.at));
+      const commentRows = await tx
+        .select({ comment, authorName: user.name })
+        .from(comment)
+        .leftJoin(user, eq(user.id, comment.author))
+        .where(eq(comment.requestId, req.id))
+        .orderBy(asc(comment.at));
+      return [dept, bills, attachments, accountingHistory, pay ?? null, eventRows, commentRows];
+    },
+  );
 
   const filesWithUrls = await Promise.all(
     files.map(async (f) => ({ ...f, downloadUrl: await presignGetUrl(f.storageKey) })),
+  );
+
+  const conversationEntries: ConversationEntry[] = await Promise.all(
+    comments.map(async ({ comment: c, authorName }) => ({
+      id: c.id,
+      authorName: authorName ?? "Former user",
+      roleAtTime: c.roleAtTime,
+      body: c.body,
+      at: c.at.toISOString(),
+      attachments: await Promise.all(
+        commentAttachments
+          .filter((a) => a.commentId === c.id)
+          .map(async (a) => ({ id: a.id, mime: a.mime, downloadUrl: await presignGetUrl(a.storageKey) })),
+      ),
+    })),
   );
 
   const latestAccounting = accountingRows[0] ?? null;
@@ -148,6 +179,8 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
           })}
         </ul>
       </div>
+
+      {role !== "developer" && <ConversationPanel requestId={req.id} entries={conversationEntries} />}
     </div>
   );
 }
