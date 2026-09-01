@@ -8,7 +8,7 @@ export default async function ResubmitPage({ params }: PageProps<"/requests/[id]
   const session = await verifySession();
 
   const resolved = await resolveViewerRole(session.userId, id);
-  if (!resolved || resolved.role !== "requester" || resolved.request.stage !== "raised" || resolved.request.revision <= 1) {
+  if (!resolved || resolved.role !== "requester" || resolved.request.stage !== "raised") {
     notFound();
   }
   const { request: req } = resolved;

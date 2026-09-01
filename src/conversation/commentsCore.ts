@@ -3,6 +3,7 @@ import { withGrantScope } from "@/db/runtime";
 import { comment, requestFile, user } from "@/db/schema";
 import { resolveViewerRole } from "@/requests/viewerRole";
 import { resolveMentions } from "./mentions";
+import { CONVERSATION_ROLES } from "./roles";
 
 // Pure orchestration, no next/headers — mirrors resubmitCore.ts's shape.
 
@@ -16,11 +17,6 @@ export type PostCommentParams = {
 };
 
 export type PostCommentResult = { ok: true; commentId: string; mentions: string[] } | { ok: false; error: string };
-
-// Roles the capability table (AGENTS.md §11) grants "comment, nudge, raise
-// & answer queries" to — every role except developer, who "sees the
-// machine, not the money."
-const CONVERSATION_ROLES = ["requester", "approver", "accountant", "payer", "super_admin"];
 
 export async function postComment(params: PostCommentParams): Promise<PostCommentResult> {
   const body = params.body.trim();
