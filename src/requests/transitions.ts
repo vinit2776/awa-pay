@@ -86,6 +86,21 @@ async function runTransition(
   const spec = TRANSITIONS[name];
 
   return withGrantScope(actorId, spec.requiredRole, async (tx) => {
+    // Plain SELECT ... FOR UPDATE works here specifically because every
+    // requester-role transition (resubmit, withdraw) only ever has
+    // fromStages: ["raised"] — which always coincides with
+    // request_update's own requester branch requiring stage = 'raised'
+    // (0006_desks_rls_and_grants.sql). That coincidence is load-bearing:
+    // Postgres row-locking clauses require the row to satisfy an
+    // applicable UPDATE policy, not just the SELECT policy, so a
+    // requester-role FOR UPDATE on a request NOT in 'raised' stage
+    // silently returns zero rows — no error, the lock just quietly does
+    // nothing. Traced and fixed in src/requests/lock.ts's
+    // lockRequestMutex (an advisory lock, RLS-independent) for
+    // src/conversation/{queries,nudges}Core.ts, which need the same
+    // per-request mutex from roles/stages this coincidence doesn't cover.
+    // Don't widen any requester transition's fromStages beyond ["raised"]
+    // without re-checking this.
     const [req] = await tx.select().from(request).where(eq(request.id, requestId)).for("update");
     if (!req) {
       return { ok: false, error: "Request not found." };

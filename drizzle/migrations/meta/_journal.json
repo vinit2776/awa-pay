@@ -85,6 +85,20 @@
       "when": 1788245500000,
       "tag": "0011_queries_rls_and_grants",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1788285212806,
+      "tag": "0012_nudges_schema",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1788285300000,
+      "tag": "0013_nudges_rls_and_grants",
+      "breakpoints": true
     }
   ]
 }

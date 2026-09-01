@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import type { Role } from "@/db/runtime";
 import { verifySession } from "@/auth/dal";
 import { postComment, type CommentAttachment, type PostCommentResult } from "@/conversation/commentsCore";
+import { sendNudge, type NudgeResult } from "@/conversation/nudgesCore";
 import { answerQuery, raiseQuery, type AnswerResult, type QueryResult } from "@/conversation/queriesCore";
 import {
   accountRequest,
@@ -156,6 +157,16 @@ export async function answerQueryAction(requestId: string, queryId: string, inpu
   const session = await verifySession();
   const meta = await getClientMeta();
   const result = await answerQuery(session.userId, requestId, queryId, input, meta);
+  if (result.ok) {
+    revalidatePath(`/requests/${requestId}`);
+  }
+  return result;
+}
+
+export async function sendNudgeAction(requestId: string): Promise<NudgeResult> {
+  const session = await verifySession();
+  const meta = await getClientMeta();
+  const result = await sendNudge(session.userId, requestId, meta);
   if (result.ok) {
     revalidatePath(`/requests/${requestId}`);
   }
