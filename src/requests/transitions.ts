@@ -1,16 +1,16 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { type Role, type ScopedTx, withGrantScope } from "@/db/runtime";
 import {
   accounting,
-  event,
   holdSubReasonEnum,
   payment,
   paymentModeEnum,
+  query,
   request,
   requestFile,
   requestStageEnum,
 } from "@/db/schema";
-import { computeEventHash } from "@/events/hash";
+import { appendEvent } from "@/events/append";
 import { headObjectContentLength } from "@/storage/r2";
 
 export type PaymentMode = (typeof paymentModeEnum.enumValues)[number];
@@ -46,7 +46,8 @@ export type TransitionName =
   | "returnToApprover"
   | "pay"
   | "returnToAccounts"
-  | "resubmit";
+  | "resubmit"
+  | "withdraw";
 
 const TRANSITIONS: Record<
   TransitionName,
@@ -64,6 +65,7 @@ const TRANSITIONS: Record<
   pay: { requiredRole: "payer", fromStages: ["to_pay"], toStage: "paid", eventType: "request.paid" },
   returnToAccounts: { requiredRole: "payer", fromStages: ["to_pay"], toStage: "with_accounts", eventType: "request.returned_to_accounts" },
   resubmit: { requiredRole: "requester", fromStages: ["raised"], toStage: "awaiting_approval", eventType: "request.resubmitted" },
+  withdraw: { requiredRole: "requester", fromStages: ["raised"], toStage: "withdrawn", eventType: "request.withdrawn" },
 };
 
 export type TransitionResult = { ok: true } | { ok: false; error: string };
@@ -88,6 +90,21 @@ async function runTransition(
     if (!req) {
       return { ok: false, error: "Request not found." };
     }
+
+    // A query freezes a request in place regardless of what's being
+    // attempted — uniformly across every transition, resubmit and
+    // withdraw included, since a query can legitimately be raised at any
+    // stage a request passes through. Checked before the stage-legality
+    // check below so the error a caller sees names the actual blocker.
+    const [openQuery] = await tx
+      .select({ id: query.id })
+      .from(query)
+      .where(and(eq(query.requestId, req.id), isNull(query.resolvedAt)))
+      .limit(1);
+    if (openQuery) {
+      return { ok: false, error: "This request has an open query — answer it before continuing." };
+    }
+
     if (!spec.fromStages.includes(req.stage)) {
       return { ok: false, error: `This request is no longer in a stage "${name}" can act on.` };
     }
@@ -108,29 +125,22 @@ async function runTransition(
 
     const { objectType, objectId, after } = await buildAfter(tx, req);
 
-    const [latest] = await tx
-      .select({ hash: event.hash })
-      .from(event)
-      .where(eq(event.requestId, req.id))
-      .orderBy(desc(event.at))
-      .limit(1);
-    const prevHash = latest?.hash ?? null;
-
     const selfActioned = actorId === req.raisedBy;
-    const eventFields = {
-      requestId: req.id,
-      actor: actorId,
-      roleAtTime: spec.requiredRole,
-      type: spec.eventType,
-      objectType,
-      objectId,
-      before: { stage: req.stage },
-      after: { ...after, selfActioned },
-      reason,
-    };
-    const hash = computeEventHash(eventFields, prevHash);
-
-    await tx.insert(event).values({ ...eventFields, ip: meta.ip, userAgent: meta.userAgent, prevHash, hash });
+    await appendEvent(
+      tx,
+      {
+        requestId: req.id,
+        actor: actorId,
+        roleAtTime: spec.requiredRole,
+        type: spec.eventType,
+        objectType,
+        objectId,
+        before: { stage: req.stage },
+        after: { ...after, selfActioned },
+        reason,
+      },
+      meta,
+    );
 
     return { ok: true };
   });
@@ -419,4 +429,25 @@ export async function resubmitRequest(
       };
     },
   );
+}
+
+export async function withdrawRequest(actorId: string, requestId: string, meta: Meta): Promise<TransitionResult> {
+  // Mirrors resubmitCore.ts's ownership check exactly: request_update's
+  // RLS policy for the requester role is department-pool-wide while
+  // stage = 'raised' (any requester in the department, not just the one
+  // who raised it) — the raisedBy check below is what actually restricts
+  // withdrawal to the person who raised the request.
+  const [req] = await withGrantScope(actorId, "requester", (tx) => tx.select().from(request).where(eq(request.id, requestId)));
+  if (!req) {
+    return { ok: false, error: "Request not found." };
+  }
+  if (req.raisedBy !== actorId) {
+    return { ok: false, error: "Only the requester who raised this can withdraw it." };
+  }
+
+  return runTransition(actorId, "withdraw", requestId, meta, null, { closeReason: "Withdrawn by requester" }, async () => ({
+    objectType: "request",
+    objectId: requestId,
+    after: {},
+  }));
 }

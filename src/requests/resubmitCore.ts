@@ -38,7 +38,12 @@ export async function resubmit(params: ResubmitParams): Promise<ResubmitResult> 
   if (req.raisedBy !== params.userId) {
     return { ok: false, error: "Only the requester who raised this can resubmit it." };
   }
-  if (req.stage !== "raised" || req.revision <= 1) {
+  // stage === 'raised' already fully means "returned for correction" —
+  // captureCore.ts always inserts as 'awaiting_approval', so nothing else
+  // sets a request back to 'raised'. A revision > 1 condition here used to
+  // additionally require a request had already been resubmitted once
+  // before, which rejected every legitimate first-time resubmit outright.
+  if (req.stage !== "raised") {
     return { ok: false, error: "This request isn't waiting on a resubmission." };
   }
 

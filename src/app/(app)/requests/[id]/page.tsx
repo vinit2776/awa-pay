@@ -1,8 +1,8 @@
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, isNull } from "drizzle-orm";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { withGrantScope } from "@/db/runtime";
-import { accounting, comment, company, department, event, headOfAccount, payment, requestFile, user } from "@/db/schema";
+import { accounting, comment, company, department, event, headOfAccount, payment, query, requestFile, user } from "@/db/schema";
 import { renderEventSummary } from "@/events/render";
 import { formatMinorUnits } from "@/lib/money";
 import { resolveViewerRole } from "@/requests/viewerRole";
@@ -12,6 +12,8 @@ import { ApproverPanel } from "./ApproverPanel";
 import { AccountantPanel } from "./AccountantPanel";
 import { ConversationPanel, type ConversationEntry } from "./ConversationPanel";
 import { PayerPanel } from "./PayerPanel";
+import { QueryPanel, type OpenQuery } from "./QueryPanel";
+import { WithdrawButton } from "./WithdrawButton";
 
 export default async function RequestDetailPage({ params }: PageProps<"/requests/[id]">) {
   const { id } = await params;
@@ -23,7 +25,7 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
   }
   const { role, request: req } = resolved;
 
-  const [department_, files, commentAttachments, accountingRows, paymentRow, events, comments] = await withGrantScope(
+  const [department_, files, commentAttachments, accountingRows, paymentRow, events, comments, openQueryRows] = await withGrantScope(
     session.userId,
     role,
     async (tx) => {
@@ -56,7 +58,13 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
         .leftJoin(user, eq(user.id, comment.author))
         .where(eq(comment.requestId, req.id))
         .orderBy(asc(comment.at));
-      return [dept, bills, attachments, accountingHistory, pay ?? null, eventRows, commentRows];
+      const openQueries = await tx
+        .select({ query, raisedByName: user.name })
+        .from(query)
+        .leftJoin(user, eq(user.id, query.raisedBy))
+        .where(and(eq(query.requestId, req.id), isNull(query.resolvedAt)))
+        .orderBy(asc(query.at));
+      return [dept, bills, attachments, accountingHistory, pay ?? null, eventRows, commentRows, openQueries];
     },
   );
 
@@ -78,6 +86,14 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
       ),
     })),
   );
+
+  const openQueries: OpenQuery[] = openQueryRows.map(({ query: q, raisedByName }) => ({
+    id: q.id,
+    question: q.question,
+    directedAt: q.directedAt,
+    raisedByName: raisedByName ?? "Former user",
+    at: q.at.toISOString(),
+  }));
 
   const latestAccounting = accountingRows[0] ?? null;
 
@@ -143,13 +159,16 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
         </div>
       )}
 
-      {role === "requester" && req.stage === "raised" && req.revision > 1 && (
-        <Link
-          href={`/requests/${req.id}/resubmit`}
-          className="rounded bg-black px-4 py-2 text-center text-sm font-medium text-white dark:bg-white dark:text-black"
-        >
-          Resubmit as revision {req.revision + 1}
-        </Link>
+      {role === "requester" && req.stage === "raised" && (
+        <div className="flex gap-2">
+          <Link
+            href={`/requests/${req.id}/resubmit`}
+            className="flex-1 rounded bg-black px-4 py-2 text-center text-sm font-medium text-white dark:bg-white dark:text-black"
+          >
+            Resubmit as revision {req.revision + 1}
+          </Link>
+          <WithdrawButton requestId={req.id} />
+        </div>
       )}
 
       {role === "approver" && (req.stage === "awaiting_approval" || req.stage === "on_hold") && (
@@ -180,6 +199,7 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
         </ul>
       </div>
 
+      {role !== "developer" && <QueryPanel requestId={req.id} viewerRole={role} openQueries={openQueries} />}
       {role !== "developer" && <ConversationPanel requestId={req.id} entries={conversationEntries} />}
     </div>
   );

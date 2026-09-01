@@ -2,8 +2,10 @@
 
 import { headers } from "next/headers";
 import { revalidatePath } from "next/cache";
+import type { Role } from "@/db/runtime";
 import { verifySession } from "@/auth/dal";
 import { postComment, type CommentAttachment, type PostCommentResult } from "@/conversation/commentsCore";
+import { answerQuery, raiseQuery, type AnswerResult, type QueryResult } from "@/conversation/queriesCore";
 import {
   accountRequest,
   approveRequest,
@@ -14,6 +16,7 @@ import {
   returnRequestToRequester,
   returnToAccounts,
   returnToApprover,
+  withdrawRequest,
   type AdviceAttachment,
   type FromAccount,
   type HoldSubReason,
@@ -131,4 +134,30 @@ export async function returnToAccountsAction(requestId: string, input: { reason:
   const session = await verifySession();
   const meta = await getClientMeta();
   return afterTransition(requestId, await returnToAccounts(session.userId, requestId, input, meta));
+}
+
+export async function withdrawAction(requestId: string): Promise<TransitionResult> {
+  const session = await verifySession();
+  const meta = await getClientMeta();
+  return afterTransition(requestId, await withdrawRequest(session.userId, requestId, meta));
+}
+
+export async function raiseQueryAction(requestId: string, input: { directedAt: Role[]; question: string }): Promise<QueryResult> {
+  const session = await verifySession();
+  const meta = await getClientMeta();
+  const result = await raiseQuery(session.userId, requestId, input, meta);
+  if (result.ok) {
+    revalidatePath(`/requests/${requestId}`);
+  }
+  return result;
+}
+
+export async function answerQueryAction(requestId: string, queryId: string, input: { answer: string }): Promise<AnswerResult> {
+  const session = await verifySession();
+  const meta = await getClientMeta();
+  const result = await answerQuery(session.userId, requestId, queryId, input, meta);
+  if (result.ok) {
+    revalidatePath(`/requests/${requestId}`);
+  }
+  return result;
 }

@@ -23,6 +23,7 @@ export const requestStageEnum = pgEnum("request_stage", [
   "paid",
   "on_hold",
   "rejected",
+  "withdrawn",
 ]);
 
 export const paymentModeEnum = pgEnum("payment_mode", ["neft", "rtgs", "imps", "upi", "cheque", "other"]);

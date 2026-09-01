@@ -71,6 +71,14 @@ export function renderEventSummary(event: RenderableEvent): EventSummary {
       return { icon: "!", label: "Returned to accounts", detail: str("reason") };
     case "request.resubmitted":
       return { icon: "✓", label: "Resubmitted", detail: `revision ${num("revision") ?? ""}` };
+    case "request.withdrawn":
+      return { icon: "✕", label: "Withdrawn", detail: "" };
+    case "request.query_raised": {
+      const directedAt = Array.isArray(after.directedAt) ? (after.directedAt as string[]).join(" and ") : "";
+      return { icon: "?", label: `Query to ${directedAt}`, detail: str("question") };
+    }
+    case "request.query_answered":
+      return { icon: "✓", label: "Query answered", detail: str("answer") };
     default:
       return { icon: "·", label: event.type, detail: "" };
   }
