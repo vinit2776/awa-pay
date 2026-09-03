@@ -1,5 +1,5 @@
 import { and, eq, sql } from "drizzle-orm";
-import { withGrantScope } from "@/db/runtime";
+import { type Role, withGrantScope } from "@/db/runtime";
 import { nudge } from "@/db/schema";
 import { appendEvent, type Meta } from "@/events/append";
 import { lockRequestMutex } from "@/requests/lock";
@@ -14,7 +14,7 @@ import { CONVERSATION_ROLES } from "./roles";
 // slice uses throughout — see src/requests/lock.ts for why that isn't a
 // plain SELECT request ... FOR UPDATE.
 
-export type NudgeResult = { ok: true } | { ok: false; error: string };
+export type NudgeResult = { ok: true; role: Role; toRole: Role } | { ok: false; error: string };
 
 // Postgres error code for a unique-constraint violation. The friendly
 // pre-check below (SELECT before INSERT) is UX only — this is what
@@ -93,6 +93,6 @@ export async function sendNudge(actorId: string, requestId: string, meta: Meta):
       meta,
     );
 
-    return { ok: true };
+    return { ok: true, role, toRole };
   });
 }

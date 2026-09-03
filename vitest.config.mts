@@ -25,5 +25,16 @@ export default defineConfig({
     // hypothetical one (payment.reference's uniqueness test, which runs
     // six transitions back to back, timed out on CI at exactly 30s).
     testTimeout: 45_000,
+    // Vitest tracks hook time (beforeAll/afterAll/beforeEach/afterEach)
+    // separately from test time — testTimeout above does not cover it.
+    // Default is also 10s, and tests/notifications.test.ts's beforeAll
+    // (2 departments, 2 companies, 1 head_of_account, 7 users, 9 grants —
+    // ~21 sequential round trips, the heaviest fixture setup of any test
+    // file here) timed out on CI at exactly that default. Every other
+    // test file's beforeAll does fewer round trips but the same shape, so
+    // this is raised globally rather than per-file, matching the same
+    // "CI's connection to ap-south-1 is not the same as local" reasoning
+    // testTimeout above is already raised for.
+    hookTimeout: 45_000,
   },
 });
