@@ -19,8 +19,8 @@ import { CONVERSATION_ROLES } from "./roles";
 // requester acting on a non-'raised'-stage request — traced and fixed as
 // part of phase 7, a real regression from when this file was written).
 
-export type QueryResult = { ok: true; queryId: string } | { ok: false; error: string };
-export type AnswerResult = { ok: true } | { ok: false; error: string };
+export type QueryResult = { ok: true; queryId: string; role: Role } | { ok: false; error: string };
+export type AnswerResult = { ok: true; role: Role; raisedBy: string } | { ok: false; error: string };
 
 export type RaiseQueryParams = { directedAt: Role[]; question: string };
 
@@ -66,7 +66,7 @@ export async function raiseQuery(actorId: string, requestId: string, params: Rai
       meta,
     );
 
-    return { ok: true, queryId: inserted.id };
+    return { ok: true, queryId: inserted.id, role };
   });
 }
 
@@ -125,6 +125,6 @@ export async function answerQuery(
       meta,
     );
 
-    return { ok: true };
+    return { ok: true, role, raisedBy: q.raisedBy };
   });
 }

@@ -2,8 +2,10 @@
 
 import { headers } from "next/headers";
 import { revalidatePath } from "next/cache";
+import { after } from "next/server";
 import { verifySession } from "@/auth/dal";
 import { parseAmountToMinor } from "@/lib/money";
+import { notifyResubmit } from "@/notifications/recipients";
 import { resubmit, type ResubmitResult } from "@/requests/resubmitCore";
 import type { ResubmitAttachment } from "@/requests/transitions";
 import { mintUploadSlot, type UploadSlotResult } from "@/storage/uploadSlot";
@@ -54,6 +56,7 @@ export async function resubmitAction(
 
   if (result.ok) {
     revalidatePath(`/requests/${requestId}`);
+    after(() => notifyResubmit(session.userId, requestId));
   }
   return result;
 }

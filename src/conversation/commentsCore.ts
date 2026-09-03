@@ -1,5 +1,5 @@
 import { inArray, sql } from "drizzle-orm";
-import { withGrantScope } from "@/db/runtime";
+import { type Role, withGrantScope } from "@/db/runtime";
 import { comment, requestFile, user } from "@/db/schema";
 import { resolveViewerRole } from "@/requests/viewerRole";
 import { resolveMentions } from "./mentions";
@@ -16,7 +16,7 @@ export type PostCommentParams = {
   attachments: CommentAttachment[];
 };
 
-export type PostCommentResult = { ok: true; commentId: string; mentions: string[] } | { ok: false; error: string };
+export type PostCommentResult = { ok: true; commentId: string; mentions: string[]; role: Role } | { ok: false; error: string };
 
 export async function postComment(params: PostCommentParams): Promise<PostCommentResult> {
   const body = params.body.trim();
@@ -76,6 +76,6 @@ export async function postComment(params: PostCommentParams): Promise<PostCommen
       });
     }
 
-    return { ok: true, commentId: inserted.id, mentions };
+    return { ok: true, commentId: inserted.id, mentions, role };
   });
 }
