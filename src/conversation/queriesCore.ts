@@ -1,7 +1,8 @@
 import { eq } from "drizzle-orm";
 import { type Role, withGrantScope } from "@/db/runtime";
-import { query, request } from "@/db/schema";
+import { query } from "@/db/schema";
 import { appendEvent, type Meta } from "@/events/append";
+import { lockRequestMutex } from "@/requests/lock";
 import { resolveViewerRole } from "@/requests/viewerRole";
 import { CONVERSATION_ROLES } from "./roles";
 
@@ -10,10 +11,13 @@ import { CONVERSATION_ROLES } from "./roles";
 // runTransition: raising/answering a query never changes request.stage
 // (a query is a freeze, not a transition — see that file's own freeze
 // check), so there's no fromStages/toStage to validate against. Both take
-// their own SELECT request ... FOR UPDATE first anyway, purely as a mutex
-// against runTransition's identical lock on the same row — the lock
-// ordering rule this slice follows throughout: request locked before any
-// child row.
+// lockRequestMutex first anyway, purely as a mutex against runTransition's
+// identical lock on the same row — the lock ordering rule this slice
+// follows throughout: request locked before any child row. See
+// src/requests/lock.ts for why this isn't a plain
+// SELECT request ... FOR UPDATE (it silently locks nothing for a
+// requester acting on a non-'raised'-stage request — traced and fixed as
+// part of phase 7, a real regression from when this file was written).
 
 export type QueryResult = { ok: true; queryId: string } | { ok: false; error: string };
 export type AnswerResult = { ok: true } | { ok: false; error: string };
@@ -39,7 +43,7 @@ export async function raiseQuery(actorId: string, requestId: string, params: Rai
   }
 
   return withGrantScope(actorId, role, async (tx) => {
-    await tx.select({ id: request.id }).from(request).where(eq(request.id, requestId)).for("update");
+    await lockRequestMutex(tx, requestId);
 
     const [inserted] = await tx
       .insert(query)
@@ -87,7 +91,7 @@ export async function answerQuery(
   const { role } = resolved;
 
   return withGrantScope(actorId, role, async (tx) => {
-    await tx.select({ id: request.id }).from(request).where(eq(request.id, requestId)).for("update");
+    await lockRequestMutex(tx, requestId);
 
     const [q] = await tx.select().from(query).where(eq(query.id, queryId)).for("update");
     if (!q || q.requestId !== requestId) {

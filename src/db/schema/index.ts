@@ -5,6 +5,7 @@ export * from "./user";
 export * from "./roleGrant";
 export * from "./request";
 export * from "./comment";
+export * from "./nudge";
 export * from "./query";
 export * from "./requestFile";
 export * from "./event";

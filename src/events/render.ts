@@ -79,6 +79,8 @@ export function renderEventSummary(event: RenderableEvent): EventSummary {
     }
     case "request.query_answered":
       return { icon: "✓", label: "Query answered", detail: str("answer") };
+    case "request.nudged":
+      return { icon: "◔", label: "Nudged", detail: `${str("toRole")} · "any update?"` };
     default:
       return { icon: "·", label: event.type, detail: "" };
   }

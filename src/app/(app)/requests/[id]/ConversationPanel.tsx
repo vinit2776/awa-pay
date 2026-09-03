@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { postCommentAction, requestCommentAttachmentUploadSlot } from "./actions";
+import { postCommentAction, requestCommentAttachmentUploadSlot, sendNudgeAction } from "./actions";
 import type { CommentAttachment } from "@/conversation/commentsCore";
 
 async function sha256Hex(blob: Blob): Promise<string> {
@@ -28,6 +28,7 @@ export function ConversationPanel({ requestId, entries }: { requestId: string; e
   const [attachments, setAttachments] = useState<CommentAttachment[]>([]);
   const [uploading, setUploading] = useState(false);
   const [pending, setPending] = useState(false);
+  const [nudging, setNudging] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function attachFile(file: File) {
@@ -62,6 +63,18 @@ export function ConversationPanel({ requestId, entries }: { requestId: string; e
     }
     setBody("");
     setAttachments([]);
+    router.refresh();
+  }
+
+  async function nudge() {
+    setNudging(true);
+    setError(null);
+    const result = await sendNudgeAction(requestId);
+    setNudging(false);
+    if (!result.ok) {
+      setError(result.error);
+      return;
+    }
     router.refresh();
   }
 
@@ -128,6 +141,14 @@ export function ConversationPanel({ requestId, entries }: { requestId: string; e
             }}
           />
         </label>
+        <button
+          type="button"
+          disabled={nudging}
+          onClick={() => void nudge()}
+          className="rounded border border-amber-400 px-4 py-2 text-sm font-medium text-amber-700 disabled:opacity-50 dark:border-amber-700 dark:text-amber-400"
+        >
+          ◔ {nudging ? "Nudging…" : "Nudge"}
+        </button>
       </div>
     </div>
   );
