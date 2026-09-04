@@ -41,6 +41,12 @@ import {
   type TransitionResult,
 } from "@/requests/transitions";
 import { mintUploadSlot, type UploadSlotResult } from "@/storage/uploadSlot";
+import {
+  insertVendorBankAsPayer,
+  verifyVendorBank,
+  type InsertVendorBankAsPayerResult,
+  type VerifyVendorBankResult,
+} from "@/vendors/verifyCore";
 import { createVendor, searchVendors, type CreateVendorResult, type VendorSummary } from "@/vendors/vendorsCore";
 
 async function getClientMeta(): Promise<{ ip: string; userAgent: string | undefined }> {
@@ -184,6 +190,25 @@ export async function payAction(
   const session = await verifySession();
   const meta = await getClientMeta();
   return afterTransition(requestId, await payRequest(session.userId, requestId, input, meta), () => notifyPay(session.userId, requestId));
+}
+
+export async function verifyVendorBankAction(requestId: string, vendorBankId: string): Promise<VerifyVendorBankResult> {
+  const session = await verifySession();
+  const meta = await getClientMeta();
+  const result = await verifyVendorBank(session.userId, requestId, vendorBankId, meta);
+  if (result.ok) revalidatePath(`/requests/${requestId}`);
+  return result;
+}
+
+export async function insertVendorBankAsPayerAction(
+  requestId: string,
+  vendorId: string,
+  input: { beneficiaryName: string; accountNumber: string; ifsc: string; branch: string | null; effectiveFrom: string },
+): Promise<InsertVendorBankAsPayerResult> {
+  const session = await verifySession();
+  const result = await insertVendorBankAsPayer(session.userId, vendorId, input);
+  if (result.ok) revalidatePath(`/requests/${requestId}`);
+  return result;
 }
 
 export async function returnToAccountsAction(requestId: string, input: { reason: string }): Promise<TransitionResult> {
