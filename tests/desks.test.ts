@@ -3,7 +3,7 @@ import { eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { closeOwnerConnection, dbOwner } from "../scripts/db-owner";
 import { UnauthorizedGrantError, withGrantScope } from "../src/db/runtime";
-import { accounting, company, department, event, headOfAccount, payment, request, requestFile, roleGrant, user, vendor } from "../src/db/schema";
+import { accounting, company, department, event, headOfAccount, payment, request, requestFile, roleGrant, user, vendor, vendorBank } from "../src/db/schema";
 import { computeEventHash } from "../src/events/hash";
 import { hashSecret } from "../src/auth/password";
 import { submitRequest, type Attachment } from "../src/requests/captureCore";
@@ -137,6 +137,25 @@ beforeAll(async () => {
     .insert(vendor)
     .values({ name: `Desks Test Vendor ${nonce}`, createdBy: accountantUser.id })
     .returning({ id: vendor.id });
+  // Pre-verified, inserted directly (not through the app layer, like the
+  // rest of this file's fixtures) — phase 10's payer-verification gate
+  // (src/vendors/verifyCore.ts) now blocks payRequest on an unverified or
+  // absent bank, and this file's own payment tests predate that gate and
+  // aren't testing it (tests/payer-verification.test.ts is). Give the
+  // shared test vendor a verified bank up front so those tests keep
+  // exercising the four desks, not the verification gate.
+  await dbOwner.insert(vendorBank).values({
+    vendorId: testVendor.id,
+    beneficiaryName: `Desks Test Vendor ${nonce}`,
+    accountNumberEncrypted: "unused-in-desks-test",
+    accountNumberLast4: "0000",
+    ifsc: "TEST0000000",
+    effectiveFrom: "2026-01-01",
+    enteredBy: accountantUser.id,
+    enteredAsRole: "accountant",
+    verifiedBy: payerUser.id,
+    verifiedAt: new Date(),
+  });
 }, 30_000);
 
 afterAll(async () => {
@@ -161,6 +180,7 @@ afterAll(async () => {
     await dbOwner.delete(request).where(inArray(request.id, reqIds));
   }
   await dbOwner.delete(roleGrant).where(inArray(roleGrant.userId, userIds));
+  await dbOwner.delete(vendorBank).where(eq(vendorBank.vendorId, testVendor.id));
   await dbOwner.delete(vendor).where(eq(vendor.id, testVendor.id));
   await dbOwner.delete(headOfAccount).where(eq(headOfAccount.id, head.id));
   await dbOwner.delete(department).where(inArray(department.id, [deptA.id, deptB.id]));

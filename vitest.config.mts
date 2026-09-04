@@ -1,5 +1,5 @@
 import path from "node:path";
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 
 export default defineConfig({
   resolve: {
@@ -8,6 +8,17 @@ export default defineConfig({
     alias: { "@": path.resolve(import.meta.dirname, "src") },
   },
   test: {
+    // .claude/worktrees holds full nested git worktrees (their own
+    // tests/, their own node_modules) for parallel agent sessions —
+    // Vitest's own defaults exclude node_modules/dist/.git/etc but not an
+    // arbitrary nested worktree directory, so without this a run from the
+    // repo root discovers and executes another worktree's test files
+    // alongside this session's own, against whatever state that worktree
+    // happens to be in. Extend the defaults, don't replace them — losing
+    // the node_modules exclude would be far worse than the problem this
+    // fixes. Same class of bug eslint.config.mjs's own .claude/** ignore
+    // fixes for lint.
+    exclude: [...configDefaults.exclude, ".claude/**"],
     setupFiles: ["./tests/setup.ts"],
     // Isolation depends on real Postgres/RLS behavior — no mocked DB, and
     // tests that share fixtures run sequentially rather than racing writes

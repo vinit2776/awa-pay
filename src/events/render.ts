@@ -85,6 +85,8 @@ export function renderEventSummary(event: RenderableEvent): EventSummary {
       const gstin = str("gstin");
       return { icon: "✓", label: "Vendor created", detail: gstin ? `${str("name")} · ${gstin}` : str("name") };
     }
+    case "vendor.bank_verified":
+      return { icon: "✓", label: "Vendor bank verified", detail: `${str("ifsc")} · ••••${str("accountNumberLast4")}` };
     default:
       return { icon: "·", label: event.type, detail: "" };
   }

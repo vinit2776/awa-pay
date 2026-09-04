@@ -8,6 +8,7 @@ import { formatMinorUnits } from "@/lib/money";
 import { resolveViewerRole } from "@/requests/viewerRole";
 import { presignGetUrl } from "@/storage/r2";
 import { verifySession } from "@/auth/dal";
+import { checkPaymentBankReadiness } from "@/vendors/verifyCore";
 import { ApproverPanel } from "./ApproverPanel";
 import { AccountantPanel } from "./AccountantPanel";
 import { ConversationPanel, type ConversationEntry } from "./ConversationPanel";
@@ -114,6 +115,12 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
       ? (await withGrantScope(session.userId, "payer", (tx) => tx.select().from(company).where(eq(company.id, req.companyId!)).limit(1)))[0]
       : null;
 
+  // The payer-verification gate (phase 10) — computed here, server-side,
+  // same as companies/heads above, rather than fetched client-side: it's
+  // a live read (see checkPaymentBankReadiness's own comment on why),
+  // fetched once per page load alongside everything else this role needs.
+  const bankReadiness = role === "payer" && req.stage === "to_pay" ? await checkPaymentBankReadiness(session.userId, req.id) : null;
+
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-6 px-4 py-8">
       <div>
@@ -180,8 +187,8 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
       {role === "accountant" && req.stage === "with_accounts" && (
         <AccountantPanel requestId={req.id} companies={companies} heads={heads} vendorNameHint={req.vendor} />
       )}
-      {role === "payer" && req.stage === "to_pay" && (
-        <PayerPanel requestId={req.id} bankAccountsJson={companyForPayer?.bankAccounts ?? []} />
+      {role === "payer" && req.stage === "to_pay" && bankReadiness && (
+        <PayerPanel requestId={req.id} bankAccountsJson={companyForPayer?.bankAccounts ?? []} readiness={bankReadiness} />
       )}
 
       <div className="flex flex-col gap-1">

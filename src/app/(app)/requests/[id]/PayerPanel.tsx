@@ -5,7 +5,8 @@ import { useState } from "react";
 import { parseAmountToMinor } from "@/lib/money";
 import { parseBankAccounts } from "@/lib/bankAccounts";
 import type { PaymentMode } from "@/requests/transitions";
-import { payAction, returnToAccountsAction, requestAdviceUploadSlot } from "./actions";
+import type { PaymentBankReadiness } from "@/vendors/verifyCore";
+import { payAction, returnToAccountsAction, requestAdviceUploadSlot, verifyVendorBankAction, insertVendorBankAsPayerAction } from "./actions";
 
 const MODES: { value: PaymentMode; label: string }[] = [
   { value: "neft", label: "NEFT" },
@@ -24,7 +25,15 @@ async function sha256Hex(blob: Blob): Promise<string> {
     .join("");
 }
 
-export function PayerPanel({ requestId, bankAccountsJson }: { requestId: string; bankAccountsJson: unknown }) {
+export function PayerPanel({
+  requestId,
+  bankAccountsJson,
+  readiness,
+}: {
+  requestId: string;
+  bankAccountsJson: unknown;
+  readiness: PaymentBankReadiness;
+}) {
   const router = useRouter();
   const accounts = parseBankAccounts(bankAccountsJson);
   const [mode, setMode] = useState<"pay" | "return">("pay");
@@ -41,6 +50,17 @@ export function PayerPanel({ requestId, bankAccountsJson }: { requestId: string;
   const [uploading, setUploading] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // The self-correction path's own form state — reachable only from the
+  // verify-first screen's fine print (docs/START-HERE-slice-3.md's design
+  // decision on why: an escape hatch for the moment the payer is holding
+  // fresh proof, not a general-purpose vendor-bank-edit surface).
+  const [showCorrection, setShowCorrection] = useState(false);
+  const [correctionBeneficiary, setCorrectionBeneficiary] = useState("");
+  const [correctionAccount, setCorrectionAccount] = useState("");
+  const [correctionIfsc, setCorrectionIfsc] = useState("");
+  const [correctionBranch, setCorrectionBranch] = useState("");
+  const [correctionEffectiveFrom, setCorrectionEffectiveFrom] = useState(() => new Date().toISOString().slice(0, 10));
 
   async function run(action: () => Promise<{ ok: boolean; error?: string }>) {
     setPending(true);
@@ -73,6 +93,149 @@ export function PayerPanel({ requestId, bankAccountsJson }: { requestId: string;
     } finally {
       setUploading(false);
     }
+  }
+
+  async function saveCorrection() {
+    if (readiness.ready) return;
+    const vendorId = readiness.reason === "no_bank" || readiness.reason === "unverified" ? readiness.vendorId : null;
+    if (!vendorId) return;
+    setPending(true);
+    setError(null);
+    const result = await insertVendorBankAsPayerAction(requestId, vendorId, {
+      beneficiaryName: correctionBeneficiary,
+      accountNumber: correctionAccount,
+      ifsc: correctionIfsc,
+      branch: correctionBranch || null,
+      effectiveFrom: correctionEffectiveFrom,
+    });
+    setPending(false);
+    if (!result.ok) {
+      setError(result.error);
+      return;
+    }
+    router.refresh();
+  }
+
+  if (!readiness.ready) {
+    return (
+      <div className="flex flex-col gap-3 rounded border border-amber-400 bg-amber-50 p-4 dark:border-amber-700 dark:bg-amber-950">
+        {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
+
+        {readiness.reason === "no_vendor" && (
+          <p className="text-sm">This request has no accounted vendor — return it to accounts before paying.</p>
+        )}
+
+        {readiness.reason === "no_bank" && (
+          <>
+            <p className="text-sm">
+              No bank details are on file for <strong>{readiness.vendorName}</strong>.{" "}
+              <a href={`/vendors/${readiness.vendorId}`} target="_blank" rel="noreferrer" className="underline">
+                Open the vendor record
+              </a>{" "}
+              to add them, or use the fine print below if you have proof in hand right now.
+            </p>
+          </>
+        )}
+
+        {readiness.reason === "unverified" && (
+          <>
+            <p className="text-sm font-medium">Verify this vendor&apos;s bank details before paying</p>
+            <dl className="flex flex-col gap-1 text-sm">
+              <div className="flex justify-between gap-2">
+                <dt className="text-zinc-600 dark:text-zinc-400">Beneficiary</dt>
+                <dd>{readiness.bank.beneficiaryName}</dd>
+              </div>
+              <div className="flex justify-between gap-2">
+                <dt className="text-zinc-600 dark:text-zinc-400">Account</dt>
+                <dd className="font-mono">••••••{readiness.bank.accountNumberLast4}</dd>
+              </div>
+              <div className="flex justify-between gap-2">
+                <dt className="text-zinc-600 dark:text-zinc-400">IFSC</dt>
+                <dd className="font-mono">{readiness.bank.ifsc}</dd>
+              </div>
+              <div className="flex justify-between gap-2">
+                <dt className="text-zinc-600 dark:text-zinc-400">Branch</dt>
+                <dd>{readiness.bank.branch ?? "—"}</dd>
+              </div>
+            </dl>
+            <p className="text-xs text-zinc-600 dark:text-zinc-400">Compare this against the bill before confirming.</p>
+            <button
+              type="button"
+              disabled={pending}
+              onClick={() => void run(() => verifyVendorBankAction(requestId, readiness.bank.id))}
+              className="self-start rounded bg-black px-4 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-white dark:text-black"
+            >
+              Matches the bill — verify
+            </button>
+          </>
+        )}
+
+        {(readiness.reason === "no_bank" || readiness.reason === "unverified") && (
+          <div className="mt-2 border-t border-amber-300 pt-2 dark:border-amber-800">
+            {showCorrection ? (
+              <div className="flex flex-col gap-2">
+                <p className="text-xs text-zinc-600 dark:text-zinc-400">
+                  Only if you&apos;re holding proof right now — this is self-verified immediately and requires the vendor to already have
+                  a document on file.
+                </p>
+                <input
+                  type="text"
+                  value={correctionBeneficiary}
+                  onChange={(e) => setCorrectionBeneficiary(e.target.value)}
+                  placeholder="Beneficiary name"
+                  className="rounded border border-zinc-300 px-3 py-2 text-sm dark:border-zinc-700 dark:bg-black"
+                />
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={correctionAccount}
+                  onChange={(e) => setCorrectionAccount(e.target.value)}
+                  placeholder="Account number"
+                  className="rounded border border-zinc-300 px-3 py-2 text-sm dark:border-zinc-700 dark:bg-black"
+                />
+                <input
+                  type="text"
+                  value={correctionIfsc}
+                  onChange={(e) => setCorrectionIfsc(e.target.value)}
+                  placeholder="IFSC"
+                  className="rounded border border-zinc-300 px-3 py-2 text-sm dark:border-zinc-700 dark:bg-black"
+                />
+                <input
+                  type="text"
+                  value={correctionBranch}
+                  onChange={(e) => setCorrectionBranch(e.target.value)}
+                  placeholder="Branch (optional)"
+                  className="rounded border border-zinc-300 px-3 py-2 text-sm dark:border-zinc-700 dark:bg-black"
+                />
+                <input
+                  type="date"
+                  value={correctionEffectiveFrom}
+                  onChange={(e) => setCorrectionEffectiveFrom(e.target.value)}
+                  className="rounded border border-zinc-300 px-3 py-2 text-sm dark:border-zinc-700 dark:bg-black"
+                />
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    disabled={pending || !correctionBeneficiary.trim() || !correctionAccount.trim() || !correctionIfsc.trim()}
+                    onClick={() => void saveCorrection()}
+                    className="rounded bg-black px-4 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-white dark:text-black"
+                  >
+                    Save — self-verified
+                  </button>
+                  <button type="button" onClick={() => setShowCorrection(false)} className="rounded border border-zinc-300 px-4 py-2 text-sm dark:border-zinc-700">
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button type="button" onClick={() => setShowCorrection(true)} className="text-xs underline">
+                I have different, verified bank details in hand
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    );
   }
 
   return (

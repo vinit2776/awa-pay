@@ -12,6 +12,13 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // .claude/worktrees holds full nested git worktrees (their own
+    // node_modules, .next build output, everything) for parallel agent
+    // sessions — the plain ".next/**" glob above doesn't match nested
+    // paths, so without this a lint run from the repo root sweeps up
+    // another worktree's build artifacts as if they were this session's
+    // own code.
+    ".claude/**",
   ]),
   {
     // All env access under src/ funnels through src/db/runtime.ts (the

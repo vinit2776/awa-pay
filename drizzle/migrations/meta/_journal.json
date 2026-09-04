@@ -113,6 +113,13 @@
       "when": 1788500500000,
       "tag": "0015_vendor_rls_and_grants",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1788700000000,
+      "tag": "0016_payer_verification_rls_and_grants",
+      "breakpoints": true
     }
   ]
 }

@@ -13,6 +13,7 @@ import {
 } from "@/db/schema";
 import { appendEvent } from "@/events/append";
 import { headObjectContentLength } from "@/storage/r2";
+import { checkPaymentBankReadiness } from "@/vendors/verifyCore";
 
 export type PaymentMode = (typeof paymentModeEnum.enumValues)[number];
 export type HoldSubReason = (typeof holdSubReasonEnum.enumValues)[number];
@@ -327,6 +328,28 @@ export async function payRequest(
   if (!params.reference.trim()) return { ok: false, error: "A payment reference is required." };
   if (params.amountMinor <= 0) return { ok: false, error: "Enter a valid amount." };
   if (params.tdsMinor < 0) return { ok: false, error: "TDS cannot be negative." };
+
+  // The payer-verification gate (phase 10). One live read, no per-request
+  // cached flag — checkPaymentBankReadiness resolves the vendor's CURRENT
+  // bank row fresh on every call, which is the entire mechanism behind "a
+  // bank change flags every open request for this vendor": the moment any
+  // vendor_bank row is superseded, the new row's verified_at starts null,
+  // so the very next payRequest attempt on ANY open request for that
+  // vendor re-triggers this gate automatically — see
+  // src/vendors/verifyCore.ts. Checked before the row lock below, same as
+  // the advice-file corroboration right after it — a narrow, accepted race
+  // window (the same shape that check already lives with), not the actual
+  // enforcement boundary (that's the RLS-gated UPDATE itself).
+  const readiness = await checkPaymentBankReadiness(actorId, requestId);
+  if (!readiness.ready) {
+    if (readiness.reason === "no_vendor") {
+      return { ok: false, error: "This request has no accounted vendor — return it to accounts." };
+    }
+    if (readiness.reason === "no_bank") {
+      return { ok: false, error: `No bank details are on file for ${readiness.vendorName} — add bank details before paying.` };
+    }
+    return { ok: false, error: `${readiness.vendorName}'s bank details haven't been verified yet — verify them before paying.` };
+  }
 
   // Same server-side corroboration captureCore.ts uses for a bill's
   // attachment — before opening any transaction, not after.
