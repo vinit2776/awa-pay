@@ -35,7 +35,14 @@ export default defineConfig({
     // before that extra round trip existed — a live timeout, not a
     // hypothetical one (payment.reference's uniqueness test, which runs
     // six transitions back to back, timed out on CI at exactly 30s).
-    testTimeout: 45_000,
+    // Raised again to 60s in phase 10: tests/payer-verification.test.ts's
+    // "a second, separate open request... re-requires verification" case
+    // chains two full raise->approve->account cycles plus two setVendorBank
+    // calls plus several readiness checks in one test (deliberately, to
+    // prove the live-read flag against a second real request rather than
+    // asserting it in the abstract) — comfortably under 45s locally but
+    // timed out on CI at exactly that ceiling.
+    testTimeout: 60_000,
     // Vitest tracks hook time (beforeAll/afterAll/beforeEach/afterEach)
     // separately from test time — testTimeout above does not cover it.
     // Default is also 10s, and tests/notifications.test.ts's beforeAll
