@@ -41,6 +41,7 @@ import {
   type TransitionResult,
 } from "@/requests/transitions";
 import { mintUploadSlot, type UploadSlotResult } from "@/storage/uploadSlot";
+import { createVendor, searchVendors, type CreateVendorResult, type VendorSummary } from "@/vendors/vendorsCore";
 
 async function getClientMeta(): Promise<{ ip: string; userAgent: string | undefined }> {
   const h = await headers();
@@ -69,12 +70,12 @@ async function afterTransition(requestId: string, result: TransitionResult, noti
 
 export async function requestAdviceUploadSlot(mime: string): Promise<UploadSlotResult> {
   await verifySession();
-  return mintUploadSlot(mime);
+  return mintUploadSlot("bills", mime);
 }
 
 export async function requestCommentAttachmentUploadSlot(mime: string): Promise<UploadSlotResult> {
   await verifySession();
-  return mintUploadSlot(mime);
+  return mintUploadSlot("bills", mime);
 }
 
 export async function postCommentAction(
@@ -136,11 +137,28 @@ export async function releaseHoldAction(requestId: string): Promise<TransitionRe
 
 export async function accountAction(
   requestId: string,
-  input: { companyId: string; headId: string; voucherNo: string; bookedOn: string },
+  input: { companyId: string; vendorId: string; headId: string; voucherNo: string; bookedOn: string },
 ): Promise<TransitionResult> {
   const session = await verifySession();
   const meta = await getClientMeta();
   return afterTransition(requestId, await accountRequest(session.userId, requestId, input, meta), () => notifyAccount(session.userId, requestId));
+}
+
+export async function searchVendorsAction(term: string): Promise<VendorSummary[]> {
+  const session = await verifySession();
+  return searchVendors(session.userId, "accountant", term);
+}
+
+export async function createVendorAction(
+  requestId: string,
+  input: { name: string; gstin?: string | null; pan?: string | null },
+): Promise<CreateVendorResult> {
+  const session = await verifySession();
+  const meta = await getClientMeta();
+  // Hardcoded, not resolved from role_grant: AccountantPanel (the only
+  // caller) only ever renders for role === "accountant" — see
+  // src/app/(app)/requests/[id]/page.tsx.
+  return createVendor(session.userId, "accountant", requestId, input, meta);
 }
 
 export async function returnToApproverAction(requestId: string, input: { reason: string }): Promise<TransitionResult> {

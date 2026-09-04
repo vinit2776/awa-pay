@@ -133,7 +133,10 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
         <div className="flex flex-col gap-1 text-sm text-zinc-600 dark:text-zinc-400">
           {latestAccounting && (
             <p>
-              Voucher {latestAccounting.voucherNo} · booked {latestAccounting.bookedOn}
+              Voucher {latestAccounting.voucherNo} · booked {latestAccounting.bookedOn} ·{" "}
+              <Link href={`/vendors/${latestAccounting.vendorId}`} className="underline">
+                view vendor
+              </Link>
             </p>
           )}
           {paymentRow && (
@@ -175,7 +178,7 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
         <ApproverPanel requestId={req.id} stage={req.stage} />
       )}
       {role === "accountant" && req.stage === "with_accounts" && (
-        <AccountantPanel requestId={req.id} companies={companies} heads={heads} />
+        <AccountantPanel requestId={req.id} companies={companies} heads={heads} vendorNameHint={req.vendor} />
       )}
       {role === "payer" && req.stage === "to_pay" && (
         <PayerPanel requestId={req.id} bankAccountsJson={companyForPayer?.bankAccounts ?? []} />

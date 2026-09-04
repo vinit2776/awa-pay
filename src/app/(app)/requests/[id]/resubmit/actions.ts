@@ -19,7 +19,7 @@ async function getClientMeta(): Promise<{ ip: string; userAgent: string | undefi
 
 export async function requestResubmitUploadSlot(mime: string): Promise<UploadSlotResult> {
   await verifySession();
-  return mintUploadSlot(mime);
+  return mintUploadSlot("bills", mime);
 }
 
 export async function resubmitAction(

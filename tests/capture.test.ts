@@ -21,7 +21,7 @@ const nonce = randomUUID().slice(0, 8);
 async function uploadTestFile(bytes: Buffer): Promise<Attachment> {
   const fileId = randomUUID();
   const mime = "application/pdf";
-  const storageKey = buildStorageKey(fileId, mime);
+  const storageKey = buildStorageKey("bills", fileId, mime);
   const uploadUrl = await presignPutUrl(storageKey, mime);
 
   const response = await fetch(uploadUrl, {

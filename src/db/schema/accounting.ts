@@ -3,10 +3,14 @@ import { company } from "./company";
 import { headOfAccount } from "./headOfAccount";
 import { request } from "./request";
 import { user } from "./user";
+import { vendor } from "./vendor";
 
-// No vendor column: request.vendor (free text, from phase 3 capture) is
-// used as-is — vendor matching/creation is slice-3 territory. No voucher
-// uniqueness: no numbering scheme is specified anywhere; don't invent one.
+// vendor_id is required as of phase 9: "head, voucher, company. Vendor
+// matched or created" (AGENTS.md's own lifecycle description of this
+// stage). request.vendor (free text, from phase 3 capture) is never
+// rewritten — it stays a historical snapshot of what the requester typed;
+// this column is the real relational link. No voucher uniqueness: no
+// numbering scheme is specified anywhere; don't invent one.
 //
 // Deliberately no unique constraint on request_id. A payer's "return to
 // accounts" (vendor bank mismatch) needs a *new* accounting row after
@@ -24,6 +28,9 @@ export const accounting = pgTable(
     companyId: uuid("company_id")
       .notNull()
       .references(() => company.id),
+    vendorId: uuid("vendor_id")
+      .notNull()
+      .references(() => vendor.id),
     headId: uuid("head_id")
       .notNull()
       .references(() => headOfAccount.id),

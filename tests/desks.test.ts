@@ -3,7 +3,7 @@ import { eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { closeOwnerConnection, dbOwner } from "../scripts/db-owner";
 import { UnauthorizedGrantError, withGrantScope } from "../src/db/runtime";
-import { accounting, company, department, event, headOfAccount, payment, request, requestFile, roleGrant, user } from "../src/db/schema";
+import { accounting, company, department, event, headOfAccount, payment, request, requestFile, roleGrant, user, vendor } from "../src/db/schema";
 import { computeEventHash } from "../src/events/hash";
 import { hashSecret } from "../src/auth/password";
 import { submitRequest, type Attachment } from "../src/requests/captureCore";
@@ -36,7 +36,7 @@ const META = { ip: "203.0.113.30", userAgent: "vitest" };
 async function uploadTestFile(): Promise<Attachment> {
   const fileId = randomUUID();
   const mime = "application/pdf";
-  const storageKey = buildStorageKey(fileId, mime);
+  const storageKey = buildStorageKey("bills", fileId, mime);
   const uploadUrl = await presignPutUrl(storageKey, mime);
   const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46]);
   const response = await fetch(uploadUrl, { method: "PUT", headers: { "Content-Type": mime }, body: bytes });
@@ -55,6 +55,7 @@ let deptB: { id: string };
 let companyX: { id: string };
 let companyY: { id: string };
 let head: { id: string };
+let testVendor: { id: string };
 
 let requesterUser: { id: string; email: string };
 let approverUser: { id: string };
@@ -131,6 +132,11 @@ beforeAll(async () => {
   await grant(payerUserY.id, "payer", { companyIds: [companyY.id] });
   await grant(dualRoleUser.id, "requester", { deptIds: [deptA.id] });
   await grant(dualRoleUser.id, "approver", { deptIds: [deptA.id] });
+
+  [testVendor] = await dbOwner
+    .insert(vendor)
+    .values({ name: `Desks Test Vendor ${nonce}`, createdBy: accountantUser.id })
+    .returning({ id: vendor.id });
 }, 30_000);
 
 afterAll(async () => {
@@ -155,6 +161,7 @@ afterAll(async () => {
     await dbOwner.delete(request).where(inArray(request.id, reqIds));
   }
   await dbOwner.delete(roleGrant).where(inArray(roleGrant.userId, userIds));
+  await dbOwner.delete(vendor).where(eq(vendor.id, testVendor.id));
   await dbOwner.delete(headOfAccount).where(eq(headOfAccount.id, head.id));
   await dbOwner.delete(department).where(inArray(department.id, [deptA.id, deptB.id]));
   await dbOwner.delete(company).where(inArray(company.id, [companyX.id, companyY.id]));
@@ -201,7 +208,7 @@ describe("the four desks (the phase-4 gate)", () => {
       const accountResult = await accountRequest(
         accountantUser.id,
         requestId,
-        { companyId: companyX.id, headId: head.id, voucherNo: `PV-${nonce}-1`, bookedOn: "2026-08-20" },
+        { companyId: companyX.id, vendorId: testVendor.id, headId: head.id, voucherNo: `PV-${nonce}-1`, bookedOn: "2026-08-20" },
         META,
       );
       expect(accountResult.ok).toBe(true);
@@ -305,13 +312,13 @@ describe("the four desks (the phase-4 gate)", () => {
       // company scope constrains which company an accountant can book
       // into — accountX is out of accountantUserY's scope.
       await expect(
-        accountRequest(accountantUserY.id, requestId, { companyId: companyX.id, headId: head.id, voucherNo: "X", bookedOn: "2026-08-20" }, META),
+        accountRequest(accountantUserY.id, requestId, { companyId: companyX.id, vendorId: testVendor.id, headId: head.id, voucherNo: "X", bookedOn: "2026-08-20" }, META),
       ).rejects.toThrow();
 
       const accountResult = await accountRequest(
         accountantUser.id,
         requestId,
-        { companyId: companyX.id, headId: head.id, voucherNo: `PV-${nonce}-2`, bookedOn: "2026-08-20" },
+        { companyId: companyX.id, vendorId: testVendor.id, headId: head.id, voucherNo: `PV-${nonce}-2`, bookedOn: "2026-08-20" },
         META,
       );
       expect(accountResult.ok).toBe(true);
@@ -403,7 +410,7 @@ describe("the four desks (the phase-4 gate)", () => {
     expect(afterReturnToApprover.stage).toBe("awaiting_approval");
 
     await approveRequest(approverUser.id, requestId, { cycle: "unspecified", dueDate: null, noteToAccountsAndPayer: null }, META);
-    await accountRequest(accountantUser.id, requestId, { companyId: companyX.id, headId: head.id, voucherNo: `PV-${nonce}-3`, bookedOn: "2026-08-20" }, META);
+    await accountRequest(accountantUser.id, requestId, { companyId: companyX.id, vendorId: testVendor.id, headId: head.id, voucherNo: `PV-${nonce}-3`, bookedOn: "2026-08-20" }, META);
 
     const returnToAccountsResult = await returnToAccounts(payerUser.id, requestId, { reason: "Vendor bank mismatch." }, META);
     expect(returnToAccountsResult.ok).toBe(true);
@@ -420,7 +427,7 @@ describe("the four desks (the phase-4 gate)", () => {
 
     for (const id of [requestId1, requestId2]) {
       await approveRequest(approverUser.id, id, { cycle: "unspecified", dueDate: null, noteToAccountsAndPayer: null }, META);
-      await accountRequest(accountantUser.id, id, { companyId: companyX.id, headId: head.id, voucherNo: `PV-${nonce}-${id}`, bookedOn: "2026-08-20" }, META);
+      await accountRequest(accountantUser.id, id, { companyId: companyX.id, vendorId: testVendor.id, headId: head.id, voucherNo: `PV-${nonce}-${id}`, bookedOn: "2026-08-20" }, META);
     }
 
     const fromAccount = { id: "acc-1", label: "Main", bankName: "Test Bank", accountNumber: "000111", ifsc: "TEST0001" };
@@ -462,7 +469,7 @@ describe("the four desks (the phase-4 gate)", () => {
   it("rejects a transition from a user with no active grant for that role", async () => {
     const requestId = await raiseTestRequest();
     await expect(
-      accountRequest(requesterUser.id, requestId, { companyId: companyX.id, headId: head.id, voucherNo: "X", bookedOn: "2026-08-20" }, META),
+      accountRequest(requesterUser.id, requestId, { companyId: companyX.id, vendorId: testVendor.id, headId: head.id, voucherNo: "X", bookedOn: "2026-08-20" }, META),
     ).rejects.toThrow(UnauthorizedGrantError);
   });
 });

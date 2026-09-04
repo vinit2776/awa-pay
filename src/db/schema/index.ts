@@ -15,3 +15,6 @@ export * from "./loginAttempt";
 export * from "./headOfAccount";
 export * from "./accounting";
 export * from "./payment";
+export * from "./vendor";
+export * from "./vendorBank";
+export * from "./vendorDocument";
