@@ -46,7 +46,12 @@ async function uploadTestFile(): Promise<Attachment> {
     storageKey,
     mime,
     byteLength: bytes.length,
-    sha256: "0".repeat(64), // not exercised by these tests; capture.test.ts covers real hashing
+    // Unique per call, not a fixed placeholder: phase 11's capture-time
+    // duplicate check matches on this value org-wide, and a fixed
+    // placeholder would make every request in this file (and others)
+    // look like a resubmission of the same already-paid bill. Real
+    // hashing is still capture.test.ts's job, not this file's.
+    sha256: randomUUID().padEnd(64, "0"),
   };
 }
 
@@ -454,9 +459,16 @@ describe("the four desks (the phase-4 gate)", () => {
     const first = await payRequest(payerUser.id, requestId1, { fromAccount, mode: "neft", valueDate: "2026-08-21", amountMinor: 100000, tdsMinor: 0, reference: sharedReference }, META);
     expect(first.ok).toBe(true);
 
-    await expect(
-      payRequest(payerUser.id, requestId2, { fromAccount, mode: "neft", valueDate: "2026-08-21", amountMinor: 100000, tdsMinor: 0, reference: sharedReference }, META),
-    ).rejects.toThrow();
+    // Phase 11 turned the raw unique-violation into a graceful, friendly
+    // error (src/requests/transitions.ts's own catch around payRequest) —
+    // the underlying guarantee this test is actually about,
+    // request.payment_reference_unique_idx, is unchanged and still fires;
+    // only how payRequest reports it changed. Case-insensitivity itself is
+    // tests/duplicate-control.test.ts's own, more specific test.
+    const second = await payRequest(payerUser.id, requestId2, { fromAccount, mode: "neft", valueDate: "2026-08-21", amountMinor: 100000, tdsMinor: 0, reference: sharedReference }, META);
+    expect(second.ok).toBe(false);
+    if (second.ok) return;
+    expect(second.error).toMatch(/already been used/i);
   });
 
   it("self-approval is allowed and recorded, never blocked", async () => {

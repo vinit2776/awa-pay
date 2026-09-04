@@ -10,9 +10,13 @@ import { user } from "./user";
 // (concept-v2.html §09) — a distinct, bigger feature, deferred. This index
 // makes that scope cut structural, not just a UI convention.
 //
-// UNIQUE(reference) is AGENTS.md rule 7, verbatim: "a unique index on the
-// payment reference." This table didn't exist until now; this is where
-// that already-decided rule becomes real.
+// UNIQUE(upper(reference)) is AGENTS.md rule 7, verbatim: "a unique index
+// on the payment reference." This table didn't exist until now; this is
+// where that already-decided rule becomes real. Case-insensitive since
+// phase 11: a UTR retyped in a different case passed as "different" under
+// the original plain-column index — a real gap inside the one duplicate
+// signal the brief calls decisive with no listed miss case, closed as
+// part of building phase 11's duplicate control around it.
 //
 // tds_minor is a plain, manually-entered, editable integer — not computed.
 // The brief's "computed from the vendor's section and rate" needs vendor
@@ -43,7 +47,7 @@ export const payment = pgTable(
   },
   (table) => [
     uniqueIndex("payment_request_id_unique_idx").on(table.requestId),
-    uniqueIndex("payment_reference_unique_idx").on(table.reference),
+    uniqueIndex("payment_reference_unique_idx").on(sql`upper(${table.reference})`),
     check("payment_amount_minor_positive_check", sql`${table.amountMinor} > 0`),
     check("payment_tds_minor_nonneg_check", sql`${table.tdsMinor} >= 0`),
     check("payment_reference_not_blank_check", sql`char_length(${table.reference}) > 0`),

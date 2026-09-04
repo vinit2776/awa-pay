@@ -11,6 +11,7 @@ import {
   requestStageEnum,
   vendor,
 } from "@/db/schema";
+import { actorHoldsRole, checkDuplicates, recordDuplicateCheck, type DuplicateMatch, type DuplicateVerdict } from "@/duplicates/duplicateCore";
 import { appendEvent } from "@/events/append";
 import { headObjectContentLength } from "@/storage/r2";
 import { checkPaymentBankReadiness } from "@/vendors/verifyCore";
@@ -70,7 +71,9 @@ const TRANSITIONS: Record<
   withdraw: { requiredRole: "requester", fromStages: ["raised"], toStage: "withdrawn", eventType: "request.withdrawn" },
 };
 
-export type TransitionResult = { ok: true } | { ok: false; error: string };
+export type TransitionResult =
+  | { ok: true }
+  | { ok: false; error: string; duplicate?: { match: DuplicateMatch; verdict: DuplicateVerdict } };
 
 type Meta = { ip: string; userAgent: string | undefined };
 
@@ -250,11 +253,55 @@ export async function releaseHold(actorId: string, requestId: string, meta: Meta
 export async function accountRequest(
   actorId: string,
   requestId: string,
-  params: { companyId: string; vendorId: string; headId: string; voucherNo: string; bookedOn: string },
+  params: {
+    companyId: string;
+    vendorId: string;
+    headId: string;
+    voucherNo: string;
+    bookedOn: string;
+    overrideDuplicate?: { reason: string };
+  },
   meta: Meta,
 ): Promise<TransitionResult> {
   if (!params.voucherNo.trim()) return { ok: false, error: "A voucher number is required." };
   if (!params.vendorId) return { ok: false, error: "A vendor is required." };
+
+  // The decisive duplicate check (phase 11): this is the FIRST moment
+  // vendor+invoice+FY is computable at all — invoiceKey/fy already exist
+  // on the request row (generated at capture), but vendor_key only lands
+  // once a vendor is actually matched, which is what this very transition
+  // is about to do. A read-before-write pre-check, same shape as
+  // payRequest's own bank-readiness gate — the narrow race window it
+  // accepts is not the real enforcement boundary; request's own
+  // one_payment_per_invoice partial unique index is.
+  const [current] = await withGrantScope(actorId, "accountant", (tx) =>
+    tx.select({ invoiceKey: request.invoiceKey, fy: request.fy }).from(request).where(eq(request.id, requestId)).limit(1),
+  );
+  const [matchedVendorForCheck] = await withGrantScope(actorId, "accountant", (tx) =>
+    tx.select({ vendorKey: vendor.vendorKey }).from(vendor).where(eq(vendor.id, params.vendorId)).limit(1),
+  );
+
+  const duplicateResult =
+    current?.invoiceKey && current.fy && matchedVendorForCheck?.vendorKey
+      ? await checkDuplicates(actorId, "accountant", {
+          excludeRequestId: requestId,
+          vendorKey: matchedVendorForCheck.vendorKey,
+          invoiceKey: current.invoiceKey,
+          fy: current.fy,
+        })
+      : { verdict: "none" as const, match: null };
+
+  let override: { by: string; reason: string } | null = null;
+  if (duplicateResult.verdict === "blocked_paid" && duplicateResult.match) {
+    if (!params.overrideDuplicate) {
+      return { ok: false, error: "This vendor and invoice number were already paid on another request.", duplicate: { match: duplicateResult.match, verdict: duplicateResult.verdict } };
+    }
+    if (!(await actorHoldsRole(actorId, "super_admin"))) {
+      return { ok: false, error: "Only a super admin can override an already-paid vendor+invoice match.", duplicate: { match: duplicateResult.match, verdict: duplicateResult.verdict } };
+    }
+    override = { by: actorId, reason: params.overrideDuplicate.reason };
+  }
+
   return runTransition(
     actorId,
     "account",
@@ -284,6 +331,11 @@ export async function accountRequest(
           accountedBy: actorId,
         })
         .returning({ id: accounting.id });
+
+      if (duplicateResult.match) {
+        await recordDuplicateCheck(tx, requestId, duplicateResult.match, duplicateResult.verdict, override);
+      }
+
       return {
         objectType: "accounting",
         objectId: row.id,
@@ -360,48 +412,82 @@ export async function payRequest(
     }
   }
 
-  return runTransition(actorId, "pay", requestId, meta, null, {}, async (tx) => {
-    const [row] = await tx
-      .insert(payment)
-      .values({
-        requestId,
-        fromAccount: params.fromAccount,
-        mode: params.mode,
-        valueDate: params.valueDate,
-        amountMinor: params.amountMinor,
-        tdsMinor: params.tdsMinor,
-        reference: params.reference,
-        paidBy: actorId,
-      })
-      .returning({ id: payment.id });
+  // The two structural, unbypassable duplicate guarantees (phase 11) both
+  // fire somewhere in the transaction this call opens: request's own
+  // one_payment_per_invoice partial unique index, on the combined UPDATE
+  // that flips stage to 'paid' (inside runTransition itself), and
+  // payment.reference's now-case-insensitive unique index, on the INSERT
+  // below. Neither has an application-layer check ahead of it the way the
+  // advisory capture/account checks do — these are the real enforcement
+  // boundary, so a caught violation here is the expected, only path to a
+  // graceful error, not a fallback for a check that already ran.
+  try {
+    return await runTransition(actorId, "pay", requestId, meta, null, {}, async (tx) => {
+      const [row] = await tx
+        .insert(payment)
+        .values({
+          requestId,
+          fromAccount: params.fromAccount,
+          mode: params.mode,
+          valueDate: params.valueDate,
+          amountMinor: params.amountMinor,
+          tdsMinor: params.tdsMinor,
+          reference: params.reference,
+          paidBy: actorId,
+        })
+        .returning({ id: payment.id });
 
-    if (params.advice) {
-      await tx.insert(requestFile).values({
-        id: params.advice.fileId,
-        requestId,
-        kind: "payment_advice",
-        storageKey: params.advice.storageKey,
-        mime: params.advice.mime,
-        bytes: params.advice.byteLength,
-        sha256: params.advice.sha256,
-        uploadedBy: actorId,
-      });
+      if (params.advice) {
+        await tx.insert(requestFile).values({
+          id: params.advice.fileId,
+          requestId,
+          kind: "payment_advice",
+          storageKey: params.advice.storageKey,
+          mime: params.advice.mime,
+          bytes: params.advice.byteLength,
+          sha256: params.advice.sha256,
+          uploadedBy: actorId,
+        });
+      }
+
+      return {
+        objectType: "payment",
+        objectId: row.id,
+        after: {
+          mode: params.mode,
+          valueDate: params.valueDate,
+          amountMinor: params.amountMinor,
+          tdsMinor: params.tdsMinor,
+          reference: params.reference,
+          fromAccountLabel: params.fromAccount.label,
+          hasAdvice: Boolean(params.advice),
+        },
+      };
+    });
+  } catch (err) {
+    const constraint = uniqueViolationConstraint(err);
+    if (constraint === "payment_reference_unique_idx") {
+      return { ok: false, error: "This payment reference has already been used on another payment." };
     }
+    if (constraint === "one_payment_per_invoice") {
+      return { ok: false, error: "This vendor and invoice number were already paid on another request." };
+    }
+    throw err;
+  }
+}
 
-    return {
-      objectType: "payment",
-      objectId: row.id,
-      after: {
-        mode: params.mode,
-        valueDate: params.valueDate,
-        amountMinor: params.amountMinor,
-        tdsMinor: params.tdsMinor,
-        reference: params.reference,
-        fromAccountLabel: params.fromAccount.label,
-        hasAdvice: Boolean(params.advice),
-      },
-    };
-  });
+// Postgres error code for a unique-constraint violation, plus which
+// constraint — src/vendors/vendorsCore.ts's own isUniqueViolation found
+// that drizzle-orm's postgres-js driver's error shape varies by query
+// style (raw `.code` for some, `.cause.code` for others); check both
+// here too rather than assume one.
+function uniqueViolationConstraint(err: unknown): string | null {
+  const direct = err && typeof err === "object" ? (err as { code?: unknown; constraint_name?: unknown }) : null;
+  if (direct?.code === "23505" && typeof direct.constraint_name === "string") return direct.constraint_name;
+  const cause = err && typeof err === "object" && "cause" in err ? (err as { cause?: unknown }).cause : null;
+  const causeRecord = cause && typeof cause === "object" ? (cause as { code?: unknown; constraint_name?: unknown }) : null;
+  if (causeRecord?.code === "23505" && typeof causeRecord.constraint_name === "string") return causeRecord.constraint_name;
+  return null;
 }
 
 export async function returnToAccounts(

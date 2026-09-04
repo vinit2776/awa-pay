@@ -9,6 +9,7 @@ import {
   pgTable,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
 import { company } from "./company";
@@ -16,14 +17,8 @@ import { department } from "./department";
 import { holdSubReasonEnum, requestStageEnum } from "./enums";
 import { user } from "./user";
 
-// TODO(slice-3, phase 11): invoice_key, fy and flags arrive once duplicate
-// control is built. They exist in the full brief (docs/concept-v2.html §15)
-// only to support the (vendor_key, invoice_key, fy) WHERE stage = 'paid'
-// duplicate index. vendor_key itself lands in phase 9, below — a plain
-// nullable column, not generated (unlike vendor.vendor_key): it needs a
-// value from the matched vendor's own row, which a generated column can't
-// reach across to, so accountRequest (src/requests/transitions.ts) writes
-// it at the application layer instead, once accounting picks a vendor.
+// TODO(slice-4?): flags (ageing/query/due-date/repeat-amount/bank-changed)
+// are computed on-demand at render time (phase 12), not stored here.
 export const request = pgTable(
   "request",
   {
@@ -43,9 +38,22 @@ export const request = pgTable(
     invoiceDate: date("invoice_date"),
     vendor: text("vendor"),
     // Written once by accountRequest, resolved from the matched vendor's
-    // own generated vendor_key column — see the TODO above for why this
-    // one is plain rather than generated.
+    // own generated vendor_key column — plain, not generated, since it
+    // needs a value from a DIFFERENT table (the matched vendor's own
+    // key), which a generated column can't reach across to.
     vendorKey: text("vendor_key"),
+    // Generated (phase 11): normalized (trimmed, uppercased, blank ->
+    // null) so a stray space or a lowercase 'inv' doesn't defeat the
+    // (vendor_key, invoice_key, fy) duplicate index below. Together with
+    // vendor_key and fy, this is what the brief calls "the three key
+    // columns... generated, indexed, and the basis of every duplicate
+    // verdict" (concept-v2.html §15).
+    invoiceKey: text("invoice_key").generatedAlwaysAs(sql`nullif(upper(trim(invoice_no)), '')`),
+    // Generated via the financial_year() SQL function (0017) — April to
+    // March, the Indian FY. Must be IMMUTABLE to be usable in a generated
+    // column expression at all; created before this table's own ALTER in
+    // the same migration for exactly that reason.
+    fy: text("fy").generatedAlwaysAs(sql`financial_year(invoice_date)`),
     note: text("note"),
     closeReason: text("close_reason"),
     holdReviewOn: date("hold_review_on"),
@@ -56,6 +64,15 @@ export const request = pgTable(
     // without a correlated subquery through `accounting` on every read.
     companyId: uuid("company_id").references(() => company.id),
     linkedRequest: uuid("linked_request").references((): AnyPgColumn => request.id),
+    // Set only when this request was raised via the reconsideration flow
+    // (linked_request pointing at a rejected original) — resolved from
+    // that original's own hash-chained 'request.rejected' event
+    // (event.actor already IS the approver who declined it, so this needs
+    // no new lookup capability). A soft routing hint only, never
+    // enforcement: a banner and a queue-sort nudge for the approver pool,
+    // not a per-user assignment — see docs/START-HERE-slice-3.md finding
+    // #1 for why not the latter.
+    routedApproverId: uuid("routed_approver_id").references(() => user.id),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -64,5 +81,15 @@ export const request = pgTable(
     index("request_raised_by_idx").on(table.raisedBy),
     index("request_linked_request_idx").on(table.linkedRequest),
     check("request_amount_minor_positive_check", sql`${table.amountMinor} > 0`),
+    // AGENTS.md rule 7, verbatim: "A partial unique index on (vendor_key,
+    // invoice_key, fy) WHERE stage = 'paid'." The actual, unbypassable
+    // guarantee — a UI lookup or an application-layer check can't stop two
+    // simultaneous submits from both reaching this INSERT/UPDATE; this
+    // index can. Deliberately only bites once all three key columns are
+    // non-null (Postgres treats NULL as distinct from NULL in a unique
+    // index) and the row has actually reached 'paid' — a request with no
+    // invoice number/date on file simply isn't deduplicated by this
+    // signal, an accepted limitation rather than a false block.
+    uniqueIndex("one_payment_per_invoice").on(table.vendorKey, table.invoiceKey, table.fy).where(sql`${table.stage} = 'paid'`),
   ],
 );

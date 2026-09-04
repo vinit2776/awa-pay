@@ -9,6 +9,7 @@ import { resolveViewerRole } from "@/requests/viewerRole";
 import { presignGetUrl } from "@/storage/r2";
 import { verifySession } from "@/auth/dal";
 import { checkPaymentBankReadiness } from "@/vendors/verifyCore";
+import { actorHoldsRole } from "@/duplicates/duplicateCore";
 import { ApproverPanel } from "./ApproverPanel";
 import { AccountantPanel } from "./AccountantPanel";
 import { ConversationPanel, type ConversationEntry } from "./ConversationPanel";
@@ -26,7 +27,7 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
   }
   const { role, request: req } = resolved;
 
-  const [department_, files, commentAttachments, accountingRows, paymentRow, events, comments, openQueryRows] = await withGrantScope(
+  const [department_, files, commentAttachments, accountingRows, paymentRow, events, comments, openQueryRows, routedApproverName] = await withGrantScope(
     session.userId,
     role,
     async (tx) => {
@@ -65,7 +66,13 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
         .leftJoin(user, eq(user.id, query.raisedBy))
         .where(and(eq(query.requestId, req.id), isNull(query.resolvedAt)))
         .orderBy(asc(query.at));
-      return [dept, bills, attachments, accountingHistory, pay ?? null, eventRows, commentRows, openQueries];
+      // The reconsideration routing hint (phase 11) — a soft nudge, not
+      // enforcement: any approver in the department pool can still act on
+      // this request regardless of whether they're the one named here.
+      const routedName = req.routedApproverId
+        ? (await tx.select({ name: user.name }).from(user).where(eq(user.id, req.routedApproverId)).limit(1))[0]?.name ?? null
+        : null;
+      return [dept, bills, attachments, accountingHistory, pay ?? null, eventRows, commentRows, openQueries, routedName];
     },
   );
 
@@ -110,6 +117,8 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
         ])
       : [[], []];
 
+  const canOverrideDuplicate = role === "accountant" ? await actorHoldsRole(session.userId, "super_admin") : false;
+
   const companyForPayer =
     role === "payer" && req.companyId
       ? (await withGrantScope(session.userId, "payer", (tx) => tx.select().from(company).where(eq(company.id, req.companyId!)).limit(1)))[0]
@@ -133,6 +142,12 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
           {req.revision > 1 && ` · revision ${req.revision}`}
         </p>
       </div>
+
+      {role === "approver" && routedApproverName && req.stage === "awaiting_approval" && (
+        <p className="rounded border border-amber-400 bg-amber-50 px-3 py-2 text-sm dark:border-amber-700 dark:bg-amber-950">
+          A reconsideration of a bill {routedApproverName} previously declined — routed here as a hint, not an assignment; anyone in the department pool can act on it.
+        </p>
+      )}
 
       {req.note && <p className="text-sm">{req.note}</p>}
 
@@ -181,11 +196,20 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
         </div>
       )}
 
+      {role === "requester" && req.stage === "rejected" && (
+        <Link
+          href={`/requests/new?relink=${req.id}`}
+          className="rounded bg-black px-4 py-2 text-center text-sm font-medium text-white dark:bg-white dark:text-black"
+        >
+          Reconsider — raise as a new request
+        </Link>
+      )}
+
       {role === "approver" && (req.stage === "awaiting_approval" || req.stage === "on_hold") && (
         <ApproverPanel requestId={req.id} stage={req.stage} />
       )}
       {role === "accountant" && req.stage === "with_accounts" && (
-        <AccountantPanel requestId={req.id} companies={companies} heads={heads} vendorNameHint={req.vendor} />
+        <AccountantPanel requestId={req.id} companies={companies} heads={heads} vendorNameHint={req.vendor} canOverrideDuplicate={canOverrideDuplicate} />
       )}
       {role === "payer" && req.stage === "to_pay" && bankReadiness && (
         <PayerPanel requestId={req.id} bankAccountsJson={companyForPayer?.bankAccounts ?? []} readiness={bankReadiness} />

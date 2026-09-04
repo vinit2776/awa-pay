@@ -3,6 +3,8 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { accountAction, createVendorAction, returnToApproverAction, searchVendorsAction } from "./actions";
+import type { DuplicateMatch } from "@/duplicates/duplicateCore";
+import type { TransitionResult } from "@/requests/transitions";
 
 type Option = { id: string; name: string };
 type VendorMatch = { id: string; name: string; gstin: string | null; pan: string | null };
@@ -12,11 +14,13 @@ export function AccountantPanel({
   companies,
   heads,
   vendorNameHint,
+  canOverrideDuplicate,
 }: {
   requestId: string;
   companies: Option[];
   heads: Option[];
   vendorNameHint: string | null;
+  canOverrideDuplicate: boolean;
 }) {
   const router = useRouter();
   const [mode, setMode] = useState<"account" | "return">("account");
@@ -27,6 +31,8 @@ export function AccountantPanel({
   const [reason, setReason] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [duplicate, setDuplicate] = useState<DuplicateMatch | null>(null);
+  const [overrideReason, setOverrideReason] = useState("");
 
   // Vendor matching — pre-filled from the requester's own free-text
   // capture, since they already typed a name (docs/START-HERE-slice-3.md's
@@ -47,6 +53,20 @@ export function AccountantPanel({
     setPending(false);
     if (!result.ok) {
       setError(result.error ?? "Something went wrong.");
+      return;
+    }
+    router.refresh();
+  }
+
+  async function confirmAccounting(overrideDuplicateReason?: string) {
+    if (!selectedVendor) return;
+    setPending(true);
+    setError(null);
+    const result: TransitionResult = await accountAction(requestId, { companyId, vendorId: selectedVendor.id, headId, voucherNo, bookedOn, overrideDuplicateReason });
+    setPending(false);
+    if (!result.ok) {
+      setError(result.error);
+      setDuplicate(result.duplicate?.match ?? null);
       return;
     }
     router.refresh();
@@ -221,12 +241,41 @@ export function AccountantPanel({
             onChange={(e) => setBookedOn(e.target.value)}
             className="rounded border border-zinc-300 px-3 py-2 text-sm dark:border-zinc-700 dark:bg-black"
           />
+          {duplicate && (
+            <div className="flex flex-col gap-2 rounded border border-red-400 bg-red-50 p-3 text-sm dark:border-red-800 dark:bg-red-950">
+              <p className="font-medium">This vendor + invoice number was already paid on another request.</p>
+              {duplicate.viewableByActor ? (
+                <p>
+                  Matches request in stage &quot;{duplicate.stage}&quot;{duplicate.reference && <> · UTR {duplicate.reference}</>}.
+                </p>
+              ) : (
+                <p>Matches a request in a department you can&apos;t see{duplicate.viewerHint && <> — {duplicate.viewerHint}</>}.</p>
+              )}
+              {canOverrideDuplicate && (
+                <div className="flex flex-col gap-2 border-t border-red-300 pt-2 dark:border-red-800">
+                  <textarea
+                    value={overrideReason}
+                    onChange={(e) => setOverrideReason(e.target.value)}
+                    placeholder="Reason for overriding this match"
+                    rows={2}
+                    className="rounded border border-zinc-300 px-3 py-2 text-sm dark:border-zinc-700 dark:bg-black"
+                  />
+                  <button
+                    type="button"
+                    disabled={pending || !overrideReason.trim()}
+                    onClick={() => void confirmAccounting(overrideReason)}
+                    className="self-start rounded border border-red-500 px-3 py-2 text-sm font-medium text-red-700 disabled:opacity-50 dark:text-red-300"
+                  >
+                    Override and account anyway
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
           <button
             type="button"
             disabled={pending || !companyId || !headId || !voucherNo.trim() || !selectedVendor}
-            onClick={() =>
-              void run(() => accountAction(requestId, { companyId, vendorId: selectedVendor!.id, headId, voucherNo, bookedOn }))
-            }
+            onClick={() => void confirmAccounting()}
             className="rounded bg-black px-4 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-white dark:text-black"
           >
             Confirm accounting

@@ -34,7 +34,12 @@ export function renderEventSummary(event: RenderableEvent): EventSummary {
   switch (event.type) {
     case "request.raised": {
       const fileCount = num("fileCount") ?? 0;
-      return { icon: "✓", label: "Raised", detail: `${fileCount} file${fileCount === 1 ? "" : "s"} attached` };
+      const duplicateVerdict = str("duplicateVerdict");
+      const linkedRequestId = str("linkedRequestId");
+      const parts = [`${fileCount} file${fileCount === 1 ? "" : "s"} attached`];
+      if (linkedRequestId) parts.push("reconsideration of a rejected request");
+      if (duplicateVerdict && duplicateVerdict !== "none") parts.push(`duplicate check: ${duplicateVerdict.replace(/_/g, " ")}`);
+      return { icon: "✓", label: "Raised", detail: parts.join(" · ") };
     }
     case "request.approved": {
       const cycle = str("cycle");
