@@ -9,6 +9,7 @@ import {
   request,
   requestFile,
   requestStageEnum,
+  vendor,
 } from "@/db/schema";
 import { appendEvent } from "@/events/append";
 import { headObjectContentLength } from "@/storage/r2";
@@ -80,7 +81,9 @@ async function runTransition(
   requestId: string,
   meta: Meta,
   reason: string | null,
-  patch: Partial<typeof request.$inferInsert> | ((req: RequestRow) => Partial<typeof request.$inferInsert>),
+  patch:
+    | Partial<typeof request.$inferInsert>
+    | ((tx: ScopedTx, req: RequestRow) => Partial<typeof request.$inferInsert> | Promise<Partial<typeof request.$inferInsert>>),
   buildAfter: (tx: ScopedTx, req: RequestRow) => Promise<{ objectType: string; objectId: string; after: Record<string, unknown> }>,
 ): Promise<TransitionResult> {
   const spec = TRANSITIONS[name];
@@ -124,7 +127,7 @@ async function runTransition(
       return { ok: false, error: `This request is no longer in a stage "${name}" can act on.` };
     }
 
-    const resolvedPatch = typeof patch === "function" ? patch(req) : patch;
+    const resolvedPatch = typeof patch === "function" ? await patch(tx, req) : patch;
 
     // Deliberately one UPDATE, not two. request_update's RLS policy (for
     // the requester role specifically) requires stage = 'raised' in its
@@ -246,23 +249,34 @@ export async function releaseHold(actorId: string, requestId: string, meta: Meta
 export async function accountRequest(
   actorId: string,
   requestId: string,
-  params: { companyId: string; headId: string; voucherNo: string; bookedOn: string },
+  params: { companyId: string; vendorId: string; headId: string; voucherNo: string; bookedOn: string },
   meta: Meta,
 ): Promise<TransitionResult> {
   if (!params.voucherNo.trim()) return { ok: false, error: "A voucher number is required." };
+  if (!params.vendorId) return { ok: false, error: "A vendor is required." };
   return runTransition(
     actorId,
     "account",
     requestId,
     meta,
     null,
-    { companyId: params.companyId },
+    // vendorKey is resolved from the matched vendor's own generated
+    // column, not recomputed here — it must land in this same combined
+    // UPDATE (see runTransition's own comment on why one UPDATE, not two).
+    async (tx: ScopedTx) => {
+      const [matchedVendor] = await tx.select({ vendorKey: vendor.vendorKey }).from(vendor).where(eq(vendor.id, params.vendorId)).limit(1);
+      if (!matchedVendor) {
+        throw new Error("Vendor not found.");
+      }
+      return { companyId: params.companyId, vendorKey: matchedVendor.vendorKey } satisfies Partial<typeof request.$inferInsert>;
+    },
     async (tx) => {
       const [row] = await tx
         .insert(accounting)
         .values({
           requestId,
           companyId: params.companyId,
+          vendorId: params.vendorId,
           headId: params.headId,
           voucherNo: params.voucherNo,
           bookedOn: params.bookedOn,
@@ -272,7 +286,7 @@ export async function accountRequest(
       return {
         objectType: "accounting",
         objectId: row.id,
-        after: { companyId: params.companyId, headId: params.headId, voucherNo: params.voucherNo, bookedOn: params.bookedOn },
+        after: { companyId: params.companyId, vendorId: params.vendorId, headId: params.headId, voucherNo: params.voucherNo, bookedOn: params.bookedOn },
       };
     },
   );
@@ -411,7 +425,7 @@ export async function resubmitRequest(
     // 'awaiting_approval', and request_update's RLS policy only grants
     // the requester role write access while stage = 'raised', so that
     // second statement would silently touch zero rows.
-    (req) => ({
+    (_tx, req) => ({
       amountMinor: params.amountMinor,
       invoiceNo: params.invoiceNo,
       invoiceDate: params.invoiceDate,

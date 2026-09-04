@@ -99,6 +99,20 @@
       "when": 1788285300000,
       "tag": "0013_nudges_rls_and_grants",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1788500496042,
+      "tag": "0014_vendor_schema",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1788500500000,
+      "tag": "0015_vendor_rls_and_grants",
+      "breakpoints": true
     }
   ]
 }

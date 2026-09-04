@@ -17,7 +17,7 @@ export type { UploadSlotResult };
 
 export async function requestUploadSlot(mime: string): Promise<UploadSlotResult> {
   await verifySession();
-  return mintUploadSlot(mime);
+  return mintUploadSlot("bills", mime);
 }
 
 export type SubmitFormState = { ok: true; ref: string } | { ok: false; error: string } | undefined;

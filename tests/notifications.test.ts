@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { closeOwnerConnection, dbOwner } from "../scripts/db-owner";
-import { accounting, comment, company, department, event, headOfAccount, payment, query, request, requestFile, roleGrant, user } from "../src/db/schema";
+import { accounting, comment, company, department, event, headOfAccount, payment, query, request, requestFile, roleGrant, user, vendor } from "../src/db/schema";
 import { hashSecret } from "../src/auth/password";
 import { sendEmail } from "../src/notifications/email";
 import {
@@ -43,7 +43,7 @@ const META = { ip: "203.0.113.30", userAgent: "vitest" };
 async function uploadTestFile(): Promise<Attachment> {
   const fileId = randomUUID();
   const mime = "application/pdf";
-  const storageKey = buildStorageKey(fileId, mime);
+  const storageKey = buildStorageKey("bills", fileId, mime);
   const uploadUrl = await presignPutUrl(storageKey, mime);
   const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46]);
   const response = await fetch(uploadUrl, { method: "PUT", headers: { "Content-Type": mime }, body: bytes });
@@ -56,6 +56,7 @@ let deptB: { id: string };
 let companyX: { id: string };
 let companyY: { id: string };
 let head: { id: string };
+let testVendor: { id: string };
 
 let requesterUser: { id: string; email: string };
 let approverUser: { id: string; email: string };
@@ -129,6 +130,11 @@ beforeAll(async () => {
   await grant(payerUserY.id, "payer", { deptIds: [deptB.id], companyIds: [companyY.id] });
   await grant(dualRoleUser.id, "requester", { deptIds: [deptA.id] });
   await grant(dualRoleUser.id, "approver", { deptIds: [deptA.id] });
+
+  [testVendor] = await dbOwner
+    .insert(vendor)
+    .values({ name: `Notif Test Vendor ${nonce}`, createdBy: accountantUser.id })
+    .returning({ id: vendor.id });
 });
 
 afterAll(async () => {
@@ -154,6 +160,7 @@ afterAll(async () => {
     await dbOwner.delete(request).where(inArray(request.id, reqIds));
   }
   await dbOwner.delete(roleGrant).where(inArray(roleGrant.userId, userIds));
+  await dbOwner.delete(vendor).where(eq(vendor.id, testVendor.id));
   await dbOwner.delete(headOfAccount).where(eq(headOfAccount.id, head.id));
   await dbOwner.delete(department).where(inArray(department.id, [deptA.id, deptB.id]));
   await dbOwner.delete(company).where(inArray(company.id, [companyX.id, companyY.id]));
@@ -206,7 +213,7 @@ describe("notification recipients (the phase-8 gate)", () => {
   it("notifyAccount reaches payers scoped to department AND company, once accounted", async () => {
     const requestId = await raiseTestRequest();
     await approveRequest(approverUser.id, requestId, { cycle: "unspecified", dueDate: null, noteToAccountsAndPayer: null }, META);
-    await accountRequest(accountantUser.id, requestId, { companyId: companyX.id, headId: head.id, voucherNo: `PV-${nonce}-1`, bookedOn: "2026-08-20" }, META);
+    await accountRequest(accountantUser.id, requestId, { companyId: companyX.id, vendorId: testVendor.id, headId: head.id, voucherNo: `PV-${nonce}-1`, bookedOn: "2026-08-20" }, META);
 
     const emails = await notifyAccount(accountantUser.id, requestId);
     expect(emails).toContain(payerUser.email);
@@ -229,7 +236,7 @@ describe("notification recipients (the phase-8 gate)", () => {
   it("notifyReturnToAccounts reaches accountants scoped to department AND company", async () => {
     const requestId = await raiseTestRequest();
     await approveRequest(approverUser.id, requestId, { cycle: "unspecified", dueDate: null, noteToAccountsAndPayer: null }, META);
-    await accountRequest(accountantUser.id, requestId, { companyId: companyX.id, headId: head.id, voucherNo: `PV-${nonce}-2`, bookedOn: "2026-08-20" }, META);
+    await accountRequest(accountantUser.id, requestId, { companyId: companyX.id, vendorId: testVendor.id, headId: head.id, voucherNo: `PV-${nonce}-2`, bookedOn: "2026-08-20" }, META);
 
     const emails = await notifyReturnToAccounts(payerUser.id, requestId, "bank mismatch");
     expect(emails).toContain(accountantUser.email);

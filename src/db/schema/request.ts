@@ -16,11 +16,14 @@ import { department } from "./department";
 import { holdSubReasonEnum, requestStageEnum } from "./enums";
 import { user } from "./user";
 
-// TODO(slice-3): invoice_key, vendor_key, fy and flags arrive once the vendor
-// master exists. They exist in the full brief (docs/concept-v2.html §15) only
-// to support the (vendor_key, invoice_key, fy) WHERE stage = 'paid' duplicate
-// index — meaningless without a vendor master. Until then this table stores a
-// plain-text vendor name and cannot fully prevent paying the same bill twice.
+// TODO(slice-3, phase 11): invoice_key, fy and flags arrive once duplicate
+// control is built. They exist in the full brief (docs/concept-v2.html §15)
+// only to support the (vendor_key, invoice_key, fy) WHERE stage = 'paid'
+// duplicate index. vendor_key itself lands in phase 9, below — a plain
+// nullable column, not generated (unlike vendor.vendor_key): it needs a
+// value from the matched vendor's own row, which a generated column can't
+// reach across to, so accountRequest (src/requests/transitions.ts) writes
+// it at the application layer instead, once accounting picks a vendor.
 export const request = pgTable(
   "request",
   {
@@ -39,6 +42,10 @@ export const request = pgTable(
     invoiceNo: text("invoice_no"),
     invoiceDate: date("invoice_date"),
     vendor: text("vendor"),
+    // Written once by accountRequest, resolved from the matched vendor's
+    // own generated vendor_key column — see the TODO above for why this
+    // one is plain rather than generated.
+    vendorKey: text("vendor_key"),
     note: text("note"),
     closeReason: text("close_reason"),
     holdReviewOn: date("hold_review_on"),

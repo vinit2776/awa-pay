@@ -81,6 +81,10 @@ export function renderEventSummary(event: RenderableEvent): EventSummary {
       return { icon: "✓", label: "Query answered", detail: str("answer") };
     case "request.nudged":
       return { icon: "◔", label: "Nudged", detail: `${str("toRole")} · "any update?"` };
+    case "vendor.created": {
+      const gstin = str("gstin");
+      return { icon: "✓", label: "Vendor created", detail: gstin ? `${str("name")} · ${gstin}` : str("name") };
+    }
     default:
       return { icon: "·", label: event.type, detail: "" };
   }

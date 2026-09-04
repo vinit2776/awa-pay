@@ -38,3 +38,11 @@ export const holdSubReasonEnum = pgEnum("hold_sub_reason", [
 ]);
 
 export const requestFileKindEnum = pgEnum("request_file_kind", ["bill", "payment_advice", "comment_attachment"]);
+
+export const vendorDocumentKindEnum = pgEnum("vendor_document_kind", [
+  "gst_certificate",
+  "pan_card",
+  "udyam_certificate",
+  "cancelled_cheque",
+  "other",
+]);
