@@ -244,13 +244,6 @@ describe("duplicate control (the phase-11 gate)", () => {
   });
 
   it("request.one_payment_per_invoice still blocks the actual payment even after an application-level override at account time — the override is a review gate, not a backdoor", async () => {
-    // Two full raise->approve->account->verify->pay cycles plus a vendor
-    // setup, ~12+ sequential round trips — comfortably under the global
-    // 60s ceiling locally but timed out on CI at exactly that ceiling on a
-    // slower-than-usual run. A per-test override here rather than another
-    // global bump, matching vitest.config.mts's own reasoning for not
-    // inflating every other, much lighter test's timeout for one heavy
-    // outlier.
     const vendorForTest = await fullyPayVendorSetup();
     const invoiceNo = `INV-${nonce}-DB`;
     const invoiceDate = "2026-04-01";
@@ -284,10 +277,8 @@ describe("duplicate control (the phase-11 gate)", () => {
 
     const [stillOpen] = await dbOwner.select({ stage: request.stage }).from(request).where(eq(request.id, raised.requestId));
     expect(stillOpen.stage).toBe("to_pay");
-  }, 120_000);
+  });
 
-  // Same reasoning as the test above — three full raise->approve->account
-  // ->verify->pay cycles is the heaviest single test in this file.
   it("payment.reference is unique case-insensitively — the same UTR retyped in a different case is rejected", async () => {
     const vendorForTest = await fullyPayVendorSetup();
     const ref = `UTR-CASE-${nonce}`;
@@ -330,7 +321,7 @@ describe("duplicate control (the phase-11 gate)", () => {
     expect(secondPay.ok).toBe(false);
     if (secondPay.ok) return;
     expect(secondPay.error).toMatch(/already been used/i);
-  }, 120_000);
+  });
 
   it("a reconsidered request resolves routedApproverId from the original's own rejection event", async () => {
     // submitRequest lands a fresh request straight in 'awaiting_approval'
