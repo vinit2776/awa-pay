@@ -20,6 +20,7 @@
     "@aws-sdk/s3-request-presigner": "^3.1121.0",
     "@node-rs/argon2": "^2.2.0",
     "drizzle-orm": "^0.45.2",
+    "idb": "^8.0.3",
     "next": "16.3.3",
     "otpauth": "^9.5.1",
     "postgres": "^3.4.9",

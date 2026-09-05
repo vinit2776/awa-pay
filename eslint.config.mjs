@@ -25,7 +25,20 @@ const eslintConfig = defineConfig([
     // restricted runtime role) — never the migrations connection, and never
     // process.env read directly elsewhere. See AGENTS.md rule 1.
     files: ["src/**/*.{ts,tsx}"],
-    ignores: ["src/db/schema/**", "src/db/runtime.ts", "src/auth/env.ts", "src/storage/env.ts", "src/notifications/env.ts", "src/vendors/env.ts", "src/extraction/env.ts"],
+    ignores: [
+      "src/db/schema/**",
+      "src/db/runtime.ts",
+      "src/auth/env.ts",
+      "src/storage/env.ts",
+      "src/notifications/env.ts",
+      "src/vendors/env.ts",
+      "src/extraction/env.ts",
+      // Not a secret needing the restricted-connection treatment the rule
+      // above exists for — the standard dev/prod toggle, checked once to
+      // decide whether the service worker registers at all (see the
+      // file's own comment on why registration is production-only).
+      "src/app/ServiceWorkerRegistration.tsx",
+    ],
     rules: {
       "no-restricted-properties": [
         "error",
