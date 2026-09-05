@@ -3,6 +3,7 @@ import { type ScopedTx, withGrantScope } from "@/db/runtime";
 import { event, request, requestFile } from "@/db/schema";
 import { actorHoldsRole, checkDuplicates, recordDuplicateCheck, type DuplicateMatch, type DuplicateVerdict } from "@/duplicates/duplicateCore";
 import { computeEventHash } from "@/events/hash";
+import { attachExtractionToRequest } from "@/extraction/extractCore";
 import { headObjectContentLength } from "@/storage/r2";
 
 // Pure orchestration, no next/headers or next/navigation — testable
@@ -28,8 +29,21 @@ export type SubmitRequestParams = {
   invoiceNo?: string;
   invoiceDate?: string;
   vendor?: string;
+  gstinOnBill?: string;
   note?: string;
   attachments: Attachment[];
+  // Set whenever the capture screen ran extraction against the first
+  // attachment before this call (phase 13) — present whether that attempt
+  // succeeded OR failed. attemptId ties this submission back to the
+  // attempt's own extraction rows (already written, before this request
+  // existed at all); phash was computed from the same bytes and is
+  // applied to that attachment's request_file row here, its only durable
+  // home. Backfilling request_id even on a failed attempt is deliberate:
+  // it's what distinguishes "completed by hand" from "abandoned" for the
+  // health console's abandonment-rate metric (docs/START-HERE-slice-4.md)
+  // — an attempt that never gets a request_id at all is the one that was
+  // actually abandoned.
+  extraction?: { attemptId: string; phash: string | null };
   // The reconsideration flow (phase 11): set when this capture follows a
   // "Reconsider" link on a rejected request. routedApproverId is resolved
   // from that original's own rejection event, not passed in directly —
@@ -136,6 +150,7 @@ export async function submitRequest(params: SubmitRequestParams): Promise<Submit
         invoiceNo: params.invoiceNo,
         invoiceDate: params.invoiceDate,
         vendor: params.vendor,
+        gstinOnBill: params.gstinOnBill,
         note: params.note,
         linkedRequest: params.linkedRequestId,
         routedApproverId,
@@ -151,6 +166,10 @@ export async function submitRequest(params: SubmitRequestParams): Promise<Submit
         mime: attachment.mime,
         bytes: attachment.byteLength,
         sha256: attachment.sha256,
+        // Extraction only ever runs against the first attachment (see
+        // CaptureForm.tsx) — its phash, if one was computed, belongs on
+        // that same page's own row.
+        phash: i === 0 ? (params.extraction?.phash ?? null) : null,
         uploadedBy: params.userId,
       });
     }
@@ -158,6 +177,16 @@ export async function submitRequest(params: SubmitRequestParams): Promise<Submit
     if (duplicate) {
       await recordDuplicateCheck(tx, inserted.id, duplicate.match, duplicate.verdict, override);
     }
+
+    const extractionSummary = params.extraction
+      ? await attachExtractionToRequest(tx, params.extraction.attemptId, inserted.id, params.userId, {
+          vendor: params.vendor ?? null,
+          amountMajor: params.amountMinor / 100,
+          invoiceNo: params.invoiceNo ?? null,
+          invoiceDate: params.invoiceDate ?? null,
+          gstin: params.gstinOnBill ?? null,
+        })
+      : null;
 
     const eventFields = {
       requestId: inserted.id,
@@ -175,11 +204,17 @@ export async function submitRequest(params: SubmitRequestParams): Promise<Submit
         invoiceNo: params.invoiceNo ?? null,
         invoiceDate: params.invoiceDate ?? null,
         vendor: params.vendor ?? null,
+        gstinOnBill: params.gstinOnBill ?? null,
         note: params.note ?? null,
         fileCount: params.attachments.length,
         stage: "raised",
         linkedRequestId: params.linkedRequestId ?? null,
         duplicateVerdict: duplicate?.verdict ?? null,
+        // Compact summary only — the full per-field value/confidence/
+        // correction detail lives in the extraction table itself (see
+        // attachExtractionToRequest), same split duplicateVerdict above
+        // already uses against the fuller duplicate_check row.
+        extraction: extractionSummary,
       },
       reason: null,
     };

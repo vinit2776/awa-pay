@@ -25,7 +25,7 @@ const eslintConfig = defineConfig([
     // restricted runtime role) — never the migrations connection, and never
     // process.env read directly elsewhere. See AGENTS.md rule 1.
     files: ["src/**/*.{ts,tsx}"],
-    ignores: ["src/db/schema/**", "src/db/runtime.ts", "src/auth/env.ts", "src/storage/env.ts", "src/notifications/env.ts", "src/vendors/env.ts"],
+    ignores: ["src/db/schema/**", "src/db/runtime.ts", "src/auth/env.ts", "src/storage/env.ts", "src/notifications/env.ts", "src/vendors/env.ts", "src/extraction/env.ts"],
     rules: {
       "no-restricted-properties": [
         "error",

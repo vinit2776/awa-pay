@@ -41,6 +41,11 @@ export const request = pgTable(
     invoiceNo: text("invoice_no"),
     invoiceDate: date("invoice_date"),
     vendor: text("vendor"),
+    // The GSTIN printed on the bill itself, as read off by extraction or
+    // typed by the requester (phase 13) — distinct from vendor.gstin,
+    // which is the vendor master's own on-file registration and may not
+    // exist yet at capture time.
+    gstinOnBill: text("gstin_on_bill"),
     // Written once by accountRequest, resolved from the matched vendor's
     // own generated vendor_key column — plain, not generated, since it
     // needs a value from a DIFFERENT table (the matched vendor's own

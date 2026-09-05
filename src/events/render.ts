@@ -39,6 +39,12 @@ export function renderEventSummary(event: RenderableEvent): EventSummary {
       const parts = [`${fileCount} file${fileCount === 1 ? "" : "s"} attached`];
       if (linkedRequestId) parts.push("reconsideration of a rejected request");
       if (duplicateVerdict && duplicateVerdict !== "none") parts.push(`duplicate check: ${duplicateVerdict.replace(/_/g, " ")}`);
+      const extractionSummary = typeof after.extraction === "object" && after.extraction !== null ? (after.extraction as Record<string, unknown>) : null;
+      if (extractionSummary) {
+        if (extractionSummary.escalated) parts.push("extraction escalated to sonnet");
+        const fieldsCorrected = typeof extractionSummary.fieldsCorrected === "number" ? extractionSummary.fieldsCorrected : 0;
+        if (fieldsCorrected > 0) parts.push(`${fieldsCorrected} field${fieldsCorrected === 1 ? "" : "s"} corrected`);
+      }
       return { icon: "✓", label: "Raised", detail: parts.join(" · ") };
     }
     case "request.approved": {
