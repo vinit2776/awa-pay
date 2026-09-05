@@ -3,6 +3,7 @@
 import { useRef, useState } from "react";
 import { requestUploadSlot, submitRequestAction } from "./actions";
 import type { Attachment } from "@/requests/captureCore";
+import type { DuplicateMatch } from "@/duplicates/duplicateCore";
 
 const MAX_DIMENSION = 2000;
 const JPEG_QUALITY = 0.82;
@@ -35,7 +36,15 @@ async function downscaleImage(file: File): Promise<Blob> {
   return canvas.convertToBlob({ type: "image/jpeg", quality: JPEG_QUALITY });
 }
 
-export function CaptureForm({ departments }: { departments: { id: string; name: string }[] }) {
+export function CaptureForm({
+  departments,
+  linkedRequestId,
+  canOverrideDuplicate,
+}: {
+  departments: { id: string; name: string }[];
+  linkedRequestId?: string | null;
+  canOverrideDuplicate?: boolean;
+}) {
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [attaching, setAttaching] = useState(false);
   const [departmentId, setDepartmentId] = useState(departments[0]?.id ?? "");
@@ -47,6 +56,8 @@ export function CaptureForm({ departments }: { departments: { id: string; name: 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submittedRef, setSubmittedRef] = useState<string | null>(null);
+  const [duplicate, setDuplicate] = useState<DuplicateMatch | null>(null);
+  const [overrideReason, setOverrideReason] = useState("");
   const photoInputRef = useRef<HTMLInputElement>(null);
   const pdfInputRef = useRef<HTMLInputElement>(null);
 
@@ -101,7 +112,7 @@ export function CaptureForm({ departments }: { departments: { id: string; name: 
     setAttachments((prev) => prev.filter((a) => a.fileId !== fileId));
   }
 
-  async function handleSubmit() {
+  async function handleSubmit(overrideDuplicateReason?: string) {
     setSubmitting(true);
     setError(null);
     try {
@@ -119,9 +130,12 @@ export function CaptureForm({ departments }: { departments: { id: string; name: 
           byteLength: a.byteLength,
           sha256: a.sha256,
         })),
+        linkedRequestId,
+        overrideDuplicateReason,
       });
       if (!result || !result.ok) {
         setError(result?.error ?? "Something went wrong. Try again.");
+        setDuplicate(result?.duplicate?.match ?? null);
         return;
       }
       setSubmittedRef(result.ref);
@@ -269,6 +283,39 @@ export function CaptureForm({ departments }: { departments: { id: string; name: 
       </label>
 
       {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
+
+      {duplicate && (
+        <div className="flex flex-col gap-2 rounded border border-red-400 bg-red-50 p-3 text-sm dark:border-red-800 dark:bg-red-950">
+          <p className="font-medium">This looks like a duplicate of an already-paid bill.</p>
+          {duplicate.viewableByActor ? (
+            <p>
+              Matches request in stage &quot;{duplicate.stage}&quot;{duplicate.reference && <> · UTR {duplicate.reference}</>}
+              {duplicate.invoiceDate && <> · invoiced {duplicate.invoiceDate}</>}.
+            </p>
+          ) : (
+            <p>Matches a request in a department you can&apos;t see{duplicate.viewerHint && <> — {duplicate.viewerHint}</>}.</p>
+          )}
+          {canOverrideDuplicate && (
+            <div className="flex flex-col gap-2 border-t border-red-300 pt-2 dark:border-red-800">
+              <textarea
+                value={overrideReason}
+                onChange={(e) => setOverrideReason(e.target.value)}
+                placeholder="Reason for overriding this match"
+                rows={2}
+                className="rounded border border-zinc-300 px-3 py-2 text-sm dark:border-zinc-700 dark:bg-black"
+              />
+              <button
+                type="button"
+                disabled={submitting || !overrideReason.trim()}
+                onClick={() => void handleSubmit(overrideReason)}
+                className="self-start rounded border border-red-500 px-3 py-2 text-sm font-medium text-red-700 disabled:opacity-50 dark:text-red-300"
+              >
+                Override and submit anyway
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       <button
         type="button"

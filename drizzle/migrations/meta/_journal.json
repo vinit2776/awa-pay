@@ -120,6 +120,20 @@
       "when": 1788700000000,
       "tag": "0016_payer_verification_rls_and_grants",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1788700100000,
+      "tag": "0017_duplicate_control_schema",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1788700200000,
+      "tag": "0018_duplicate_control_rls_and_grants",
+      "breakpoints": true
     }
   ]
 }

@@ -46,3 +46,16 @@ export const vendorDocumentKindEnum = pgEnum("vendor_document_kind", [
   "cancelled_cheque",
   "other",
 ]);
+
+// "matched_advance" is deliberately excluded — it only makes sense once a
+// request can be part-paid (docs/concept-v2.html §09), out of scope for
+// this slice. Five of the brief's six verdicts, matching §08 exactly:
+// paid -> hard block, open -> warn, rejected -> escalate, held -> link,
+// nothing -> silent (represented here as "none").
+export const duplicateVerdictEnum = pgEnum("duplicate_verdict", [
+  "blocked_paid",
+  "warned_open",
+  "escalated_rejected",
+  "linked_held",
+  "none",
+]);

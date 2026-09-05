@@ -74,7 +74,7 @@ beforeAll(async () => {
     companyScope: "n/a",
     grantedBy: requesterUser.id,
   });
-}, 30_000);
+});
 
 afterAll(async () => {
   const requests = await dbOwner
@@ -139,7 +139,6 @@ describe("capture (the phase-3 gate)", () => {
       expect(events[0].prevHash).toBeNull();
       expect(events[0].hash).toHaveLength(64);
     },
-    30_000,
   );
 
   it(
@@ -162,7 +161,6 @@ describe("capture (the phase-3 gate)", () => {
         }),
       ).rejects.toThrow();
     },
-    30_000,
   );
 
   it(
@@ -192,7 +190,6 @@ describe("capture (the phase-3 gate)", () => {
 
       await dbOwner.delete(user).where(eq(user.id, strangerUser.id));
     },
-    30_000,
   );
 
   it("ref numbers are unique across concurrent submits", async () => {
@@ -218,7 +215,7 @@ describe("capture (the phase-3 gate)", () => {
     const refs = results.map((r) => (r.ok ? r.ref : null));
     expect(new Set(refs).size).toBe(3);
     expect(refs.every((r) => r !== null)).toBe(true);
-  }, 30_000);
+  });
 });
 
 describe("computeEventHash", () => {

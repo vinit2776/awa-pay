@@ -143,11 +143,18 @@ export async function releaseHoldAction(requestId: string): Promise<TransitionRe
 
 export async function accountAction(
   requestId: string,
-  input: { companyId: string; vendorId: string; headId: string; voucherNo: string; bookedOn: string },
+  input: { companyId: string; vendorId: string; headId: string; voucherNo: string; bookedOn: string; overrideDuplicateReason?: string },
 ): Promise<TransitionResult> {
   const session = await verifySession();
   const meta = await getClientMeta();
-  return afterTransition(requestId, await accountRequest(session.userId, requestId, input, meta), () => notifyAccount(session.userId, requestId));
+  const { overrideDuplicateReason, ...rest } = input;
+  const result = await accountRequest(
+    session.userId,
+    requestId,
+    { ...rest, overrideDuplicate: overrideDuplicateReason ? { reason: overrideDuplicateReason } : undefined },
+    meta,
+  );
+  return afterTransition(requestId, result, () => notifyAccount(session.userId, requestId));
 }
 
 export async function searchVendorsAction(term: string): Promise<VendorSummary[]> {

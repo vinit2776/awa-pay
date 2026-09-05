@@ -29,7 +29,7 @@ async function uploadTestFile(): Promise<Attachment> {
   const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46]);
   const response = await fetch(uploadUrl, { method: "PUT", headers: { "Content-Type": mime }, body: bytes });
   if (!response.ok) throw new Error(`Test fixture upload failed: ${response.status}`);
-  return { fileId, storageKey, mime, byteLength: bytes.length, sha256: "0".repeat(64) };
+  return { fileId, storageKey, mime, byteLength: bytes.length, sha256: randomUUID().padEnd(64, "0") };
 }
 
 let deptA: { id: string };
@@ -88,7 +88,7 @@ beforeAll(async () => {
   await grant(requesterUser.id, "requester", { deptIds: [deptA.id] });
   await grant(approverUser.id, "approver", { deptIds: [deptA.id] });
   await grant(accountantUser.id, "accountant", { companyIds: [companyX.id] });
-}, 30_000);
+});
 
 afterAll(async () => {
   const userIds = [requesterUser.id, approverUser.id, accountantUser.id];
@@ -110,7 +110,7 @@ afterAll(async () => {
   await dbOwner.delete(company).where(eq(company.id, companyX.id));
   await dbOwner.delete(user).where(inArray(user.id, userIds));
   await closeOwnerConnection();
-}, 30_000);
+});
 
 describe("vendor master (the phase-9 gate)", () => {
   it("encryptSecret/decryptSecret round-trip", () => {

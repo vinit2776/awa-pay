@@ -42,7 +42,15 @@ export default defineConfig({
     // prove the live-read flag against a second real request rather than
     // asserting it in the abstract) — comfortably under 45s locally but
     // timed out on CI at exactly that ceiling.
-    testTimeout: 60_000,
+    // Raised again to 120s in phase 11, after two rounds of per-test
+    // overrides on individually "heavy" tests kept failing on different
+    // tests each run: CI's whole suite ran ~6x slower than a local run in
+    // one observed case (1684s of test time vs ~280s locally), not just the
+    // heaviest three or four tests — a network-latency-to-ap-south-1
+    // problem shared by every test, sized to how many round trips it makes.
+    // Per-test overrides were reverted in favor of this global bump once
+    // the pattern was clear.
+    testTimeout: 120_000,
     // Vitest tracks hook time (beforeAll/afterAll/beforeEach/afterEach)
     // separately from test time — testTimeout above does not cover it.
     // Default is also 10s, and tests/notifications.test.ts's beforeAll

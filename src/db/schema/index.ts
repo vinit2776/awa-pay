@@ -18,3 +18,4 @@ export * from "./payment";
 export * from "./vendor";
 export * from "./vendorBank";
 export * from "./vendorDocument";
+export * from "./duplicateCheck";
