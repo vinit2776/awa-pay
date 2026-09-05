@@ -93,7 +93,7 @@ beforeAll(async () => {
   await grant(approverUser.id, "approver", { deptIds: [deptA.id] });
   await grant(accountantUser.id, "accountant", { companyIds: [companyX.id] });
   await grant(payerUser.id, "payer", { companyIds: [companyX.id] });
-}, 30_000);
+});
 
 afterAll(async () => {
   const userIds = [requesterUser.id, approverUser.id, accountantUser.id, payerUser.id];
@@ -118,7 +118,7 @@ afterAll(async () => {
   await dbOwner.delete(company).where(eq(company.id, companyX.id));
   await dbOwner.delete(user).where(inArray(user.id, userIds));
   await closeOwnerConnection();
-}, 30_000);
+});
 
 describe("payer verification (the phase-10 gate)", () => {
   it("payRequest blocks when the vendor has no bank on file", async () => {

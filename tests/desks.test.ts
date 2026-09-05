@@ -161,7 +161,7 @@ beforeAll(async () => {
     verifiedBy: payerUser.id,
     verifiedAt: new Date(),
   });
-}, 30_000);
+});
 
 afterAll(async () => {
   const userIds = [
@@ -290,7 +290,6 @@ describe("the four desks (the phase-4 gate)", () => {
         expect(recomputed).toBe(events[i].hash);
       }
     },
-    30_000,
   );
 
   it(
@@ -312,7 +311,6 @@ describe("the four desks (the phase-4 gate)", () => {
       expect(events).toHaveLength(2); // raised + exactly one approved
       expect(events[1].prevHash).toBe(events[0].hash);
     },
-    30_000,
   );
 
   it("an out-of-scope approver cannot act on another department's request (clean not-found, not a leak)", async () => {
@@ -368,7 +366,6 @@ describe("the four desks (the phase-4 gate)", () => {
       );
       expect(payResult.ok).toBe(false);
     },
-    30_000,
   );
 
   it("return for correction, then resubmit, closes the loop back to awaiting_approval", async () => {

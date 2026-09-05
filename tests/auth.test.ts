@@ -160,7 +160,5 @@ describe("login (the phase-2 gate)", () => {
       if (result.ok) return;
       expect(result.error).toMatch(/too many attempts/i);
     },
-    // Six sequential attemptLogin calls, each several transactions deep.
-    60_000,
   );
 });

@@ -88,7 +88,7 @@ beforeAll(async () => {
   await grant(requesterUser.id, "requester", { deptIds: [deptA.id] });
   await grant(approverUser.id, "approver", { deptIds: [deptA.id] });
   await grant(accountantUser.id, "accountant", { companyIds: [companyX.id] });
-}, 30_000);
+});
 
 afterAll(async () => {
   const userIds = [requesterUser.id, approverUser.id, accountantUser.id];
@@ -110,7 +110,7 @@ afterAll(async () => {
   await dbOwner.delete(company).where(eq(company.id, companyX.id));
   await dbOwner.delete(user).where(inArray(user.id, userIds));
   await closeOwnerConnection();
-}, 30_000);
+});
 
 describe("vendor master (the phase-9 gate)", () => {
   it("encryptSecret/decryptSecret round-trip", () => {
