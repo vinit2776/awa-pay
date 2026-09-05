@@ -3,14 +3,17 @@ import Link from "next/link";
 import { verifySession } from "@/auth/dal";
 import { withGrantScope } from "@/db/runtime";
 import { request } from "@/db/schema";
+import { computeFlags, loadFlagContext } from "@/flags/computeFlags";
+import { FlagDots } from "@/flags/FlagDots";
 import { formatMinorUnits } from "@/lib/money";
 
 export default async function AccountsQueuePage() {
   const session = await verifySession();
 
-  const requests = await withGrantScope(session.userId, "accountant", (tx) =>
-    tx.select().from(request).where(eq(request.stage, "with_accounts")).orderBy(asc(request.createdAt)),
-  );
+  const [requests, flagContext] = await withGrantScope(session.userId, "accountant", async (tx) => {
+    const rows = await tx.select().from(request).where(eq(request.stage, "with_accounts")).orderBy(asc(request.createdAt));
+    return [rows, await loadFlagContext(tx, rows)] as const;
+  });
 
   return (
     <div className="flex flex-1 flex-col gap-4 px-4 py-8">
@@ -26,6 +29,7 @@ export default async function AccountsQueuePage() {
               <span>
                 <span className="font-medium">{r.ref}</span>
                 {r.vendor && <span className="text-zinc-600 dark:text-zinc-400"> · {r.vendor}</span>}
+                <FlagDots flags={computeFlags(r, flagContext)} />
               </span>
               <span className="font-medium">{formatMinorUnits(r.amountMinor, r.currency)}</span>
             </Link>

@@ -176,11 +176,19 @@ export async function approveRequest(
   params: { cycle: PaymentCycle; dueDate: string | null; noteToAccountsAndPayer: string | null },
   meta: Meta,
 ): Promise<TransitionResult> {
-  return runTransition(actorId, "approve", requestId, meta, null, { note: params.noteToAccountsAndPayer }, async () => ({
-    objectType: "request",
-    objectId: requestId,
-    after: { cycle: params.cycle, dueDate: params.dueDate, noteToAccountsAndPayer: params.noteToAccountsAndPayer },
-  }));
+  return runTransition(
+    actorId,
+    "approve",
+    requestId,
+    meta,
+    null,
+    { note: params.noteToAccountsAndPayer, dueDate: params.cycle === "dated" ? params.dueDate : null },
+    async () => ({
+      objectType: "request",
+      objectId: requestId,
+      after: { cycle: params.cycle, dueDate: params.dueDate, noteToAccountsAndPayer: params.noteToAccountsAndPayer },
+    }),
+  );
 }
 
 export async function returnRequestToRequester(
@@ -196,7 +204,7 @@ export async function returnRequestToRequester(
     requestId,
     meta,
     params.reason,
-    { closeReason: null, holdReviewOn: null, holdSubReason: null },
+    { closeReason: null, holdReviewOn: null, holdSubReason: null, dueDate: null },
     async (_tx, req) => ({ objectType: "request", objectId: requestId, after: { revision: req.revision, reason: params.reason } }),
   );
 }
