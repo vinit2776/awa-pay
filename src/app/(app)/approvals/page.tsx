@@ -3,18 +3,21 @@ import Link from "next/link";
 import { verifySession } from "@/auth/dal";
 import { withGrantScope } from "@/db/runtime";
 import { request } from "@/db/schema";
+import { computeFlags, loadFlagContext } from "@/flags/computeFlags";
+import { FlagDots } from "@/flags/FlagDots";
 import { formatMinorUnits } from "@/lib/money";
 
 export default async function ApprovalsPage() {
   const session = await verifySession();
 
-  const requests = await withGrantScope(session.userId, "approver", (tx) =>
-    tx
+  const [requests, flagContext] = await withGrantScope(session.userId, "approver", async (tx) => {
+    const rows = await tx
       .select()
       .from(request)
       .where(inArray(request.stage, ["awaiting_approval", "on_hold"]))
-      .orderBy(asc(request.createdAt)),
-  );
+      .orderBy(asc(request.createdAt));
+    return [rows, await loadFlagContext(tx, rows)] as const;
+  });
 
   return (
     <div className="flex flex-1 flex-col gap-4 px-4 py-8">
@@ -35,6 +38,7 @@ export default async function ApprovalsPage() {
                     on hold
                   </span>
                 )}
+                <FlagDots flags={computeFlags(r, flagContext)} />
               </span>
               <span className="font-medium">{formatMinorUnits(r.amountMinor, r.currency)}</span>
             </Link>

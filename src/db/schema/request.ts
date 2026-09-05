@@ -17,8 +17,12 @@ import { department } from "./department";
 import { holdSubReasonEnum, requestStageEnum } from "./enums";
 import { user } from "./user";
 
-// TODO(slice-4?): flags (ageing/query/due-date/repeat-amount/bank-changed)
-// are computed on-demand at render time (phase 12), not stored here.
+// Flags (ageing/query/due-date/repeat-amount/bank-changed, phase 12) are
+// computed on-demand at render time (src/flags/computeFlags.ts) — dueDate
+// below is the one exception, cached for the same reason stage/companyId
+// already are: it lives in event.after jsonb (the approve event) and a
+// queue rendering N rows can't afford an event scan per row just to sort
+// and display it.
 export const request = pgTable(
   "request",
   {
@@ -73,6 +77,13 @@ export const request = pgTable(
     // not a per-user assignment — see docs/START-HERE-slice-3.md finding
     // #1 for why not the latter.
     routedApproverId: uuid("routed_approver_id").references(() => user.id),
+    // Set by approveRequest when cycle is "dated" (null for
+    // unspecified/immediate), cleared by returnRequestToRequester. The
+    // only flag-relevant field cached on this row — see the comment
+    // above. No RLS change needed: the existing per-role request_update
+    // policies already cover every column on this table, not a named
+    // subset.
+    dueDate: date("due_date"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

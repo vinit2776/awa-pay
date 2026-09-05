@@ -4,6 +4,8 @@ import { notFound } from "next/navigation";
 import { withGrantScope } from "@/db/runtime";
 import { accounting, comment, company, department, event, headOfAccount, payment, query, requestFile, user } from "@/db/schema";
 import { renderEventSummary } from "@/events/render";
+import { computeFlags, loadFlagContext } from "@/flags/computeFlags";
+import { FlagDots } from "@/flags/FlagDots";
 import { formatMinorUnits } from "@/lib/money";
 import { resolveViewerRole } from "@/requests/viewerRole";
 import { presignGetUrl } from "@/storage/r2";
@@ -27,7 +29,7 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
   }
   const { role, request: req } = resolved;
 
-  const [department_, files, commentAttachments, accountingRows, paymentRow, events, comments, openQueryRows, routedApproverName] = await withGrantScope(
+  const [department_, files, commentAttachments, accountingRows, paymentRow, events, comments, openQueryRows, routedApproverName, flagContext] = await withGrantScope(
     session.userId,
     role,
     async (tx) => {
@@ -72,7 +74,8 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
       const routedName = req.routedApproverId
         ? (await tx.select({ name: user.name }).from(user).where(eq(user.id, req.routedApproverId)).limit(1))[0]?.name ?? null
         : null;
-      return [dept, bills, attachments, accountingHistory, pay ?? null, eventRows, commentRows, openQueries, routedName];
+      const flagCtx = await loadFlagContext(tx, [req]);
+      return [dept, bills, attachments, accountingHistory, pay ?? null, eventRows, commentRows, openQueries, routedName, flagCtx];
     },
   );
 
@@ -133,7 +136,10 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-6 px-4 py-8">
       <div>
-        <h1 className="text-2xl font-semibold">{req.ref}</h1>
+        <h1 className="text-2xl font-semibold">
+          {req.ref}
+          <FlagDots flags={computeFlags(req, flagContext)} />
+        </h1>
         <p className="text-zinc-600 dark:text-zinc-400">
           {req.vendor ?? "Unknown vendor"} · {department_?.name} · {formatMinorUnits(req.amountMinor, req.currency)}
         </p>
