@@ -186,6 +186,10 @@ describe("payer verification (the phase-10 gate)", () => {
     expect(paid.ok).toBe(true);
   });
 
+  // Two full raise->approve->account cycles plus a vendor and two bank
+  // supersessions — the heaviest test in this file; timed out on CI at the
+  // global 60s ceiling on a slower-than-usual run. Per-test override rather
+  // than another global bump, matching duplicate-control.test.ts's own fix.
   it("a second, separate open request for the same vendor independently re-requires verification after a bank change", async () => {
     const requestIdForVendor = await raiseTestRequestOnly();
     const created = await createVendor(accountantUser.id, "accountant", requestIdForVendor, { name: `Payer Verify Reflag ${nonce}` }, META);
@@ -237,7 +241,7 @@ describe("payer verification (the phase-10 gate)", () => {
       META,
     );
     expect(blockedAgain.ok).toBe(false);
-  });
+  }, 120_000);
 
   it("verifyVendorBank is one-directional: verifying an already-verified row is a safe no-op error, not a re-verify", async () => {
     const requestIdForVendor = await raiseTestRequestOnly();
