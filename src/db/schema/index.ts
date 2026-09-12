@@ -19,3 +19,5 @@ export * from "./vendor";
 export * from "./vendorBank";
 export * from "./vendorDocument";
 export * from "./duplicateCheck";
+export * from "./extractionAttempt";
+export * from "./extraction";

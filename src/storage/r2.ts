@@ -48,3 +48,18 @@ export async function headObjectContentLength(storageKey: string): Promise<numbe
     return null;
   }
 }
+
+// The one place this codebase actually downloads a bill's bytes, rather
+// than just presigning access to them — extraction (phase 13) needs the
+// real pixels for the vision call and, for images, the dHash. Every other
+// caller (comment attachments, vendor documents, the request detail page)
+// only ever needs presignGetUrl; don't reach for this for anything that
+// can be served as a redirect instead.
+export async function getObjectBytes(storageKey: string): Promise<Buffer> {
+  const result = await client.send(new GetObjectCommand({ Bucket: R2_BUCKET_NAME, Key: storageKey }));
+  const bytes = await result.Body?.transformToByteArray();
+  if (!bytes) {
+    throw new Error(`Object body was empty: ${storageKey}`);
+  }
+  return Buffer.from(bytes);
+}

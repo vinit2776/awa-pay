@@ -141,6 +141,20 @@
       "when": 1788700300000,
       "tag": "0019_request_due_date",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1788700400000,
+      "tag": "0020_extraction_schema",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1788700500000,
+      "tag": "0021_extraction_rls_and_grants",
+      "breakpoints": true
     }
   ]
 }

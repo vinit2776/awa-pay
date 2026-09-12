@@ -59,3 +59,18 @@ export const duplicateVerdictEnum = pgEnum("duplicate_verdict", [
   "linked_held",
   "none",
 ]);
+
+// The six fields the confirmation screen shows (concept-v2.html §02/§15).
+// currency is included for the audit table's own completeness even though
+// it's never actually asked of the model — an India-only system, always
+// "INR" — see src/extraction/extractCore.ts.
+export const extractionFieldEnum = pgEnum("extraction_field", [
+  "vendor",
+  "amount",
+  "currency",
+  "invoiceNo",
+  "invoiceDate",
+  "gstin",
+]);
+
+export const extractionAttemptStatusEnum = pgEnum("extraction_attempt_status", ["succeeded", "failed"]);

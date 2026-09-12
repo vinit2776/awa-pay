@@ -15,6 +15,7 @@
     "db:seed-user": "tsx scripts/seed-user.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.124.0",
     "@aws-sdk/client-s3": "^3.1121.0",
     "@aws-sdk/s3-request-presigner": "^3.1121.0",
     "@node-rs/argon2": "^2.2.0",
@@ -25,7 +26,8 @@
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "resend": "^6.25.0",
-    "server-only": "^0.0.1"
+    "server-only": "^0.0.1",
+    "sharp": "^0.35.4"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
