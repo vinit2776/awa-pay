@@ -20,6 +20,11 @@ export default async function Home() {
             Raise a request
           </Link>
         )}
+        {roles.has("requester") && (
+          <Link href="/requests" className="underline">
+            My requests
+          </Link>
+        )}
         {roles.has("approver") && (
           <Link href="/approvals" className="underline">
             Approvals
