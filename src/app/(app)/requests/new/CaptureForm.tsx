@@ -1,12 +1,12 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { checkDuplicateWarningAction, requestUploadSlot, runExtractionAction, submitRequestAction } from "./actions";
+import { downscaleImage, sha256Hex } from "@/capture/imagePrep";
+import { enqueueDraft, listDrafts, type QueuedAttachment } from "@/capture/draftQueue";
 import type { Attachment } from "@/requests/captureCore";
 import type { DuplicateMatch, DuplicateVerdict } from "@/duplicates/duplicateCore";
 
-const MAX_DIMENSION = 2000;
-const JPEG_QUALITY = 0.82;
 const MAX_ATTACHMENT_BYTES = 15 * 1024 * 1024;
 // Extraction is a live model call, not a background job — the capture
 // screen awaits it synchronously (docs/START-HERE-slice-4.md finding #1),
@@ -14,33 +14,12 @@ const MAX_ATTACHMENT_BYTES = 15 * 1024 * 1024;
 // straight to blank, editable fields.
 const EXTRACTION_TIMEOUT_MS = 25_000;
 
-type PendingAttachment = Attachment & { previewUrl: string };
+// blob kept alongside every attachment (even after a successful upload) so
+// that a LATER failure mid-multi-page-capture can still queue every page
+// captured so far as one offline draft, uniformly — see the offline
+// fallback in attachFile below.
+type PendingAttachment = Attachment & { previewUrl: string; blob: Blob };
 type FieldConfidence = Partial<Record<"vendor" | "amount" | "invoiceNo" | "invoiceDate" | "gstin", number>>;
-
-async function sha256Hex(blob: Blob): Promise<string> {
-  const buffer = await blob.arrayBuffer();
-  const digest = await crypto.subtle.digest("SHA-256", buffer);
-  return Array.from(new Uint8Array(digest))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-}
-
-// Downscales to at most MAX_DIMENSION on the longer edge (never upscales)
-// and re-encodes as JPEG. This also drops EXIF and picks up the browser's
-// EXIF auto-orientation on draw, so output comes out right-side-up.
-async function downscaleImage(file: File): Promise<Blob> {
-  const bitmap = await createImageBitmap(file);
-  const scale = Math.min(1, MAX_DIMENSION / Math.max(bitmap.width, bitmap.height));
-  const width = Math.round(bitmap.width * scale);
-  const height = Math.round(bitmap.height * scale);
-
-  const canvas = new OffscreenCanvas(width, height);
-  const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("Canvas context unavailable.");
-  ctx.drawImage(bitmap, 0, 0, width, height);
-
-  return canvas.convertToBlob({ type: "image/jpeg", quality: JPEG_QUALITY });
-}
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
   return Promise.race([promise, new Promise<null>((resolve) => setTimeout(() => resolve(null), ms))]);
@@ -84,8 +63,39 @@ export function CaptureForm({
   const [duplicate, setDuplicate] = useState<DuplicateMatch | null>(null);
   const [duplicateVerdict, setDuplicateVerdict] = useState<DuplicateVerdict | null>(null);
   const [overrideReason, setOverrideReason] = useState("");
+  // Offline capture (phase 14): once any attachment can't reach the
+  // network, the whole capture falls back to being queued locally rather
+  // than losing it — see attachFile's own fallback below.
+  const [isOfflineCapture, setIsOfflineCapture] = useState(false);
+  const [offlineQueue, setOfflineQueue] = useState<QueuedAttachment[]>([]);
+  const [queuedDraftCount, setQueuedDraftCount] = useState(0);
+  const [justQueued, setJustQueued] = useState(false);
   const photoInputRef = useRef<HTMLInputElement>(null);
   const pdfInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    void listDrafts().then((drafts) => setQueuedDraftCount(drafts.length));
+  }, []);
+
+  function queueAttachmentsAsDraft(extra: QueuedAttachment) {
+    setIsOfflineCapture(true);
+    // Anything already uploaded this session moves back into the offline
+    // queue too, keyed by the blob every attachment already carries — a
+    // later connectivity drop shouldn't strand the pages that DID make it
+    // out, it should just mean the whole capture is queued as one unit
+    // (re-uploading an already-successful page is a little wasteful, not
+    // incorrect: the orphaned R2 object never gets a request row).
+    setAttachments((prev) => {
+      if (prev.length > 0) {
+        setOfflineQueue((q) => [
+          ...q,
+          ...prev.map((a) => ({ blob: a.blob, mime: a.mime, sha256: a.sha256, byteLength: a.byteLength })),
+        ]);
+      }
+      return [];
+    });
+    setOfflineQueue((q) => [...q, extra]);
+  }
 
   async function attachFile(file: File, isImage: boolean) {
     if (file.size > MAX_ATTACHMENT_BYTES) {
@@ -93,7 +103,7 @@ export function CaptureForm({
       return;
     }
 
-    const isFirstAttachment = attachments.length === 0;
+    const isFirstAttachment = attachments.length === 0 && offlineQueue.length === 0;
 
     setAttaching(true);
     setError(null);
@@ -101,6 +111,11 @@ export function CaptureForm({
       const blob = isImage ? await downscaleImage(file) : file;
       const mime = isImage ? "image/jpeg" : "application/pdf";
       const sha256 = await sha256Hex(blob);
+
+      if (isOfflineCapture || !navigator.onLine) {
+        queueAttachmentsAsDraft({ blob, mime, sha256, byteLength: blob.size });
+        return;
+      }
 
       const slot = await requestUploadSlot(mime);
       if (!slot.ok) {
@@ -112,9 +127,12 @@ export function CaptureForm({
         method: "PUT",
         headers: { "Content-Type": mime },
         body: blob,
-      });
-      if (!putResponse.ok) {
-        setError("Upload failed. Check your connection and try again.");
+      }).catch(() => null);
+      if (!putResponse || !putResponse.ok) {
+        // A network failure, not a validation error — fall back to
+        // queueing this and every earlier page in this session rather
+        // than losing the capture.
+        queueAttachmentsAsDraft({ blob, mime, sha256, byteLength: blob.size });
         return;
       }
 
@@ -127,6 +145,7 @@ export function CaptureForm({
           byteLength: blob.size,
           sha256,
           previewUrl: URL.createObjectURL(blob),
+          blob,
         },
       ]);
 
@@ -185,6 +204,17 @@ export function CaptureForm({
     setSubmitting(true);
     setError(null);
     try {
+      // Offline this whole capture, or connectivity dropped partway
+      // through — queue locally rather than attempt a submit that has
+      // nothing real to point at yet (no attachments actually reached
+      // R2). The draft flushes itself the next time the app opens with a
+      // connection (src/capture/DraftFlusher.tsx).
+      if (isOfflineCapture || (attachments.length === 0 && offlineQueue.length > 0)) {
+        await enqueueDraft({ departmentId, amount, invoiceNo, invoiceDate, vendor, gstinOnBill, note, attachments: offlineQueue });
+        setJustQueued(true);
+        return;
+      }
+
       const result = await submitRequestAction({
         departmentId,
         amount,
@@ -221,6 +251,17 @@ export function CaptureForm({
         <p className="text-lg font-semibold">Submitted — {submittedRef}</p>
         <p className="text-sm text-zinc-600 dark:text-zinc-400">
           Your approver will pick this up from their queue.
+        </p>
+      </div>
+    );
+  }
+
+  if (justQueued) {
+    return (
+      <div className="flex w-full max-w-sm flex-col items-center gap-3 text-center">
+        <p className="text-lg font-semibold">Queued — will send when you&apos;re back on signal</p>
+        <p className="text-sm text-zinc-600 dark:text-zinc-400">
+          No connection right now. This bill is saved on this device and will send itself next time the app is open with signal.
         </p>
       </div>
     );
@@ -274,7 +315,17 @@ export function CaptureForm({
         {attaching && <p className="text-sm text-zinc-500">Attaching…</p>}
         {extracting && <p className="text-sm text-zinc-500">Reading the bill…</p>}
         {extractionNote && <p className="text-sm text-amber-700 dark:text-amber-400">{extractionNote}</p>}
-        {attachments.length > 0 && (
+        {isOfflineCapture && (
+          <p className="text-sm text-amber-700 dark:text-amber-400">
+            No connection — captured locally. It&apos;ll send itself once you&apos;re back on signal.
+          </p>
+        )}
+        {queuedDraftCount > 0 && (
+          <p className="text-sm text-zinc-500">
+            {queuedDraftCount} draft{queuedDraftCount === 1 ? "" : "s"} waiting to upload. They&apos;ll send themselves when you&apos;re back on signal.
+          </p>
+        )}
+        {(attachments.length > 0 || offlineQueue.length > 0) && (
           <ul className="flex flex-col gap-1">
             {attachments.map((a, i) => (
               <li key={a.fileId} className="flex items-center justify-between rounded bg-zinc-100 px-3 py-2 text-sm dark:bg-zinc-900">
@@ -282,6 +333,11 @@ export function CaptureForm({
                 <button type="button" onClick={() => removeAttachment(a.fileId)} className="text-red-600 dark:text-red-400">
                   Remove
                 </button>
+              </li>
+            ))}
+            {offlineQueue.map((a, i) => (
+              <li key={`offline-${i}`} className="flex items-center justify-between rounded bg-amber-100 px-3 py-2 text-sm dark:bg-amber-950">
+                <span>Page {attachments.length + i + 1} — {a.mime === "application/pdf" ? "PDF" : "photo"} (offline)</span>
               </li>
             ))}
           </ul>
@@ -422,11 +478,11 @@ export function CaptureForm({
 
       <button
         type="button"
-        disabled={submitting || attaching || extracting || attachments.length === 0 || !departmentId}
+        disabled={submitting || attaching || extracting || (attachments.length === 0 && offlineQueue.length === 0) || !departmentId}
         onClick={() => void handleSubmit()}
         className="rounded bg-black px-4 py-3 font-medium text-white disabled:opacity-50 dark:bg-white dark:text-black"
       >
-        {submitting ? "Submitting…" : "Submit"}
+        {submitting ? "Submitting…" : isOfflineCapture ? "Queue" : "Submit"}
       </button>
     </div>
   );
