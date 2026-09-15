@@ -4,7 +4,7 @@ import { verifySession } from "@/auth/dal";
 import { withGrantScope } from "@/db/runtime";
 import { event, request } from "@/db/schema";
 import { computeFlags, loadFlagContext } from "@/flags/computeFlags";
-import { FlagDots } from "@/flags/FlagDots";
+import { FlagChips } from "@/ui/FlagChips";
 import { formatMinorUnits } from "@/lib/money";
 
 // Sort key: immediate first, then dated by due date ascending, then
@@ -75,7 +75,7 @@ export default async function PaymentsQueuePage() {
                     </span>
                   )}
                   {cycle === "dated" && r.dueDate && <span className="text-zinc-600 dark:text-zinc-400"> · due {r.dueDate}</span>}
-                  <FlagDots flags={computeFlags(r, flagContext)} />
+                  <FlagChips flags={computeFlags(r, flagContext)} />
                 </span>
                 <span className="font-medium">{formatMinorUnits(r.amountMinor, r.currency)}</span>
               </Link>

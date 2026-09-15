@@ -1,26 +1,104 @@
 @import "tailwindcss";
 
+/*
+ * awa-pay palette — "ledger green" on a cool paper ground. Neutrals carry
+ * a slight green bias so they sit with the accent rather than beside it.
+ * Semantic colours (ok / warn / danger / info) are separate from the
+ * accent and mean the same thing everywhere: warn is a query or a hold,
+ * danger is a block or a rejection.
+ *
+ * Named so they don't collide with Tailwind's own palette — existing
+ * pages still use zinc/red/amber utilities until each is restyled.
+ */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --ground: #f3f5f4;
+  --surface: #ffffff;
+  --sunk: #e9edeb;
+  --line: #d5ddd9;
+  --line-soft: #e4e9e6;
+  --ink: #15201b;
+  --ink-2: #4e5c55;
+  --ink-3: #6f7c76;
+  --accent: #1d5c47;
+  --accent-ink: #ffffff;
+  --accent-soft: #dcebe4;
+  --warn: #9a5b08;
+  --warn-soft: #fbefd9;
+  --warn-line: #e7c68c;
+  --danger: #a8261b;
+  --danger-soft: #fbe4e1;
+  --danger-line: #ebb3ac;
+  --info: #23508f;
+  --info-soft: #e1eaf6;
+  --ok: #1f7a4c;
+  --ok-soft: #ddf1e5;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    --ground: #0e1412;
+    --surface: #151d1a;
+    --sunk: #1c2622;
+    --line: #2b3833;
+    --line-soft: #222d29;
+    --ink: #e4ebe7;
+    --ink-2: #a6b3ad;
+    --ink-3: #849089;
+    --accent: #5dbb94;
+    --accent-ink: #0b1511;
+    --accent-soft: #1b3a2e;
+    --warn: #e6b15c;
+    --warn-soft: #342711;
+    --warn-line: #6a4f1e;
+    --danger: #f08a7e;
+    --danger-soft: #3a1916;
+    --danger-line: #6e2c25;
+    --info: #8db4ee;
+    --info-soft: #172a44;
+    --ok: #6fd19c;
+    --ok-soft: #15321f;
   }
 }
 
+@theme inline {
+  --color-ground: var(--ground);
+  --color-surface: var(--surface);
+  --color-sunk: var(--sunk);
+  --color-line: var(--line);
+  --color-line-soft: var(--line-soft);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-soft: var(--accent-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-warn-line: var(--warn-line);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-danger-line: var(--danger-line);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --color-ok: var(--ok);
+  --color-ok-soft: var(--ok-soft);
+
+  --font-sans: var(--font-plex-sans), system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-cond: var(--font-plex-cond), "Arial Narrow", system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--font-sans);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition: none !important;
+    animation: none !important;
+  }
 }
