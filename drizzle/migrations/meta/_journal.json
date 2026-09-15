@@ -155,6 +155,13 @@
       "when": 1788700500000,
       "tag": "0021_extraction_rls_and_grants",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1788700600000,
+      "tag": "0022_role_grant_requester_check",
+      "breakpoints": true
     }
   ]
 }

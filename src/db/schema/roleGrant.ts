@@ -33,5 +33,11 @@ export const roleGrant = pgTable(
       "role_grant_company_scope_list_check",
       sql`${table.companyScope} <> 'list' or (${table.companyIds} is not null and cardinality(${table.companyIds}) > 0)`,
     ),
+    // AGENTS.md's own rule, unenforced until now: "Requester: named
+    // departments only, never global." Nothing else in the codebase
+    // checked this — scripts/seed-user.ts's default grant even violated
+    // it — so this is the first real enforcement, at the one layer a UI
+    // bug or a future script can't bypass.
+    check("role_grant_requester_not_global_check", sql`${table.role} <> 'requester' or ${table.deptScope} <> 'global'`),
   ],
 );
