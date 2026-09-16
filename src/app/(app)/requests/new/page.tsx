@@ -3,7 +3,8 @@ import { verifySession } from "@/auth/dal";
 import { withGrantScope, UnauthorizedGrantError } from "@/db/runtime";
 import { department, event, request, user } from "@/db/schema";
 import { actorHoldsRole } from "@/duplicates/duplicateCore";
-import { CaptureForm } from "./CaptureForm";
+import { Notice } from "@/ui/Notice";
+import { RaiseFlow } from "./CaptureForm";
 
 export default async function NewRequestPage({ searchParams }: PageProps<"/requests/new">) {
   const session = await verifySession();
@@ -58,15 +59,14 @@ export default async function NewRequestPage({ searchParams }: PageProps<"/reque
   const canOverride = await actorHoldsRole(session.userId, "super_admin");
 
   return (
-    <div className="flex flex-1 flex-col items-center gap-6 px-4 py-8">
-      <h1 className="text-2xl font-semibold">Raise a request</h1>
+    <div className="mx-auto flex w-full max-w-md flex-1 flex-col gap-5 px-4 py-6">
+      <h1 className="text-xl font-semibold tracking-tight">New request</h1>
       {reconsidering && (
-        <p className="w-full max-w-sm rounded border border-amber-400 bg-amber-50 px-3 py-2 text-sm dark:border-amber-700 dark:bg-amber-950">
-          Reconsidering {reconsidering.ref}
-          {reconsidering.declinedBy && <> — declined by {reconsidering.declinedBy}</>}. This will be a new request linked back to it.
-        </p>
+        <Notice tone="info" title={`Reconsidering ${reconsidering.ref}`}>
+          {reconsidering.declinedBy && <>Declined by {reconsidering.declinedBy}. </>}This will be a new request linked back to it, and goes to the same approver.
+        </Notice>
       )}
-      <CaptureForm departments={departments} linkedRequestId={linkedRequestId} canOverrideDuplicate={canOverride} />
+      <RaiseFlow departments={departments} linkedRequestId={linkedRequestId} canOverrideDuplicate={canOverride} />
     </div>
   );
 }

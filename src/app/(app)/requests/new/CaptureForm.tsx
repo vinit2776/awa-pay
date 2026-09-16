@@ -1,11 +1,16 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { checkDuplicateWarningAction, requestUploadSlot, runExtractionAction, submitRequestAction } from "./actions";
 import { downscaleImage, sha256Hex } from "@/capture/imagePrep";
 import { enqueueDraft, listDrafts, type QueuedAttachment } from "@/capture/draftQueue";
+import { isLowConfidence, unconfirmedFields, type ExtractedField, type FieldConfidence } from "@/capture/confirmFields";
 import type { Attachment } from "@/requests/captureCore";
 import type { DuplicateMatch, DuplicateVerdict } from "@/duplicates/duplicateCore";
+import { Notice } from "@/ui/Notice";
+import { StageTrack } from "@/ui/StageTrack";
+import { buttonClass, eyebrowClass, inputClass, labelClass } from "@/ui/styles";
 
 const MAX_ATTACHMENT_BYTES = 15 * 1024 * 1024;
 // Extraction is a live model call, not a background job — the capture
@@ -19,18 +24,51 @@ const EXTRACTION_TIMEOUT_MS = 25_000;
 // captured so far as one offline draft, uniformly — see the offline
 // fallback in attachFile below.
 type PendingAttachment = Attachment & { previewUrl: string; blob: Blob };
-type FieldConfidence = Partial<Record<"vendor" | "amount" | "invoiceNo" | "invoiceDate" | "gstin", number>>;
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
   return Promise.race([promise, new Promise<null>((resolve) => setTimeout(() => resolve(null), ms))]);
 }
 
-function ConfidenceBadge({ confidence }: { confidence: number | undefined }) {
-  if (confidence === undefined) return null;
-  return confidence >= 0.8 ? (
-    <span className="text-xs text-green-700 dark:text-green-400">✓ High confidence</span>
-  ) : (
-    <span className="text-xs text-amber-700 dark:text-amber-400">! Low confidence — please confirm</span>
+const FIELD_LABEL: Record<ExtractedField, string> = {
+  amount: "Amount",
+  vendor: "Vendor",
+  invoiceNo: "Invoice no.",
+  invoiceDate: "Invoice date",
+  gstin: "GSTIN on bill",
+};
+
+// "Raise another" remounts the form with a new key rather than resetting
+// every piece of state by hand — nothing from the last bill can leak in.
+export function RaiseFlow(props: { departments: { id: string; name: string }[]; linkedRequestId?: string | null; canOverrideDuplicate?: boolean }) {
+  const [round, setRound] = useState(0);
+  return <CaptureForm key={round} {...props} onRaiseAnother={() => setRound((r) => r + 1)} />;
+}
+
+function Steps({ current }: { current: 1 | 2 }) {
+  const steps = ["Bill", "Details", "Send"];
+  return (
+    <ol className="flex items-center gap-1.5 text-[11.5px] text-ink-3" aria-label={`Step ${current} of 3`}>
+      {steps.map((label, i) => {
+        const n = i + 1;
+        const done = n < current;
+        const cur = n === current;
+        return (
+          <li key={label} className="flex flex-1 items-center gap-1.5 last:flex-none">
+            <span className={`flex items-center gap-1.5 ${cur ? "font-semibold text-ink" : ""}`} aria-current={cur ? "step" : undefined}>
+              <span
+                className={`grid size-[18px] place-items-center rounded-full border-[1.5px] text-[10px] font-semibold ${
+                  done ? "border-accent bg-accent text-accent-ink" : cur ? "border-accent text-accent" : "border-line"
+                }`}
+              >
+                {done ? "✓" : n}
+              </span>
+              {label}
+            </span>
+            {n < steps.length && <span className="h-px min-w-2 flex-1 bg-line" />}
+          </li>
+        );
+      })}
+    </ol>
   );
 }
 
@@ -38,10 +76,12 @@ export function CaptureForm({
   departments,
   linkedRequestId,
   canOverrideDuplicate,
+  onRaiseAnother,
 }: {
   departments: { id: string; name: string }[];
   linkedRequestId?: string | null;
   canOverrideDuplicate?: boolean;
+  onRaiseAnother?: () => void;
 }) {
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [attaching, setAttaching] = useState(false);
@@ -50,6 +90,8 @@ export function CaptureForm({
   const [extractionAttemptId, setExtractionAttemptId] = useState<string | null>(null);
   const [extractionPhash, setExtractionPhash] = useState<string | null>(null);
   const [fieldConfidence, setFieldConfidence] = useState<FieldConfidence>({});
+  const [confirmed, setConfirmed] = useState<Set<ExtractedField>>(new Set());
+  const [showGstin, setShowGstin] = useState(false);
   const [departmentId, setDepartmentId] = useState(departments[0]?.id ?? "");
   const [amount, setAmount] = useState("");
   const [invoiceNo, setInvoiceNo] = useState("");
@@ -72,6 +114,11 @@ export function CaptureForm({
   const [justQueued, setJustQueued] = useState(false);
   const photoInputRef = useRef<HTMLInputElement>(null);
   const pdfInputRef = useRef<HTMLInputElement>(null);
+  // "Skip — I'll type the details": the requester stops waiting on the
+  // model. A reading that lands afterwards must not overwrite what they've
+  // typed; its attempt id is still kept so the model's answer and the
+  // human's values can be compared, exactly as when the reading succeeds.
+  const skippedRef = useRef(false);
 
   useEffect(() => {
     void listDrafts().then((drafts) => setQueuedDraftCount(drafts.length));
@@ -159,11 +206,15 @@ export function CaptureForm({
           setDuplicateVerdict(result.verdict);
         });
 
+        skippedRef.current = false;
         setExtracting(true);
         setExtractionNote(null);
         try {
           const result = await withTimeout(runExtractionAction(slot.storageKey, mime), EXTRACTION_TIMEOUT_MS);
-          if (result?.ok) {
+          if (skippedRef.current) {
+            if (result) setExtractionAttemptId(result.attemptId);
+            if (result?.ok) setExtractionPhash(result.phash);
+          } else if (result?.ok) {
             setVendor(String(result.fields.vendor.value ?? ""));
             setAmount(result.fields.amount.value === null ? "" : String(result.fields.amount.value));
             setInvoiceNo(String(result.fields.invoiceNo.value ?? ""));
@@ -198,6 +249,23 @@ export function CaptureForm({
 
   function removeAttachment(fileId: string) {
     setAttachments((prev) => prev.filter((a) => a.fileId !== fileId));
+  }
+
+  function skipReading() {
+    skippedRef.current = true;
+    setExtracting(false);
+  }
+
+  // Editing a field is confirming it — the requester has looked at it.
+  function edit(field: ExtractedField, set: (v: string) => void) {
+    return (value: string) => {
+      set(value);
+      setConfirmed((prev) => (prev.has(field) ? prev : new Set(prev).add(field)));
+    };
+  }
+
+  function confirm(field: ExtractedField) {
+    setConfirmed((prev) => new Set(prev).add(field));
   }
 
   async function handleSubmit(overrideDuplicateReason?: string) {
@@ -245,245 +313,343 @@ export function CaptureForm({
     }
   }
 
+  const fileInputs = (
+    <>
+      <input
+        ref={photoInputRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          e.target.value = "";
+          if (file) void attachFile(file, true);
+        }}
+      />
+      <input
+        ref={pdfInputRef}
+        type="file"
+        accept="application/pdf"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          e.target.value = "";
+          if (file) void attachFile(file, false);
+        }}
+      />
+    </>
+  );
+
+  // ---- Sent / saved ----
+
   if (submittedRef) {
     return (
-      <div className="flex w-full max-w-sm flex-col items-center gap-3 text-center">
-        <p className="text-lg font-semibold">Submitted — {submittedRef}</p>
-        <p className="text-sm text-zinc-600 dark:text-zinc-400">
-          Your approver will pick this up from their queue.
+      <div className="flex flex-col gap-5 pt-6">
+        <span className="grid size-13 place-items-center rounded-full bg-accent-soft text-2xl text-accent" aria-hidden>
+          ✓
+        </span>
+        <div className="flex flex-col gap-1">
+          <span className={eyebrowClass}>Sent to your approver</span>
+          <p className="font-mono text-2xl font-medium">{submittedRef}</p>
+          {vendor && <p className="text-sm text-ink-2">{vendor}</p>}
+        </div>
+        <StageTrack stage="awaiting_approval" />
+        <p className="text-sm text-ink-2">
+          An approver in your department will pick this up. You&apos;ll hear from us if they ask a question or send it back.
         </p>
+        <div className="flex flex-col gap-2">
+          <button type="button" onClick={onRaiseAnother} className={buttonClass("primary", "md", true)}>
+            Raise another
+          </button>
+          <Link href="/requests" className={buttonClass("secondary", "md", true)}>
+            See my requests
+          </Link>
+        </div>
       </div>
     );
   }
 
   if (justQueued) {
     return (
-      <div className="flex w-full max-w-sm flex-col items-center gap-3 text-center">
-        <p className="text-lg font-semibold">Queued — will send when you&apos;re back on signal</p>
-        <p className="text-sm text-zinc-600 dark:text-zinc-400">
-          No connection right now. This bill is saved on this device and will send itself next time the app is open with signal.
-        </p>
+      <div className="flex flex-col gap-5 pt-6">
+        <Notice tone="warn" title="Saved on this phone">
+          No connection right now. This bill will send itself next time the app is open with signal.
+        </Notice>
+        <div className="flex flex-col gap-2">
+          <button type="button" onClick={onRaiseAnother} className={buttonClass("primary", "md", true)}>
+            Raise another
+          </button>
+          <Link href="/requests" className={buttonClass("secondary", "md", true)}>
+            See my requests
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  // ---- Step 1: capture ----
+
+  const hasPages = attachments.length > 0 || offlineQueue.length > 0;
+
+  if (!hasPages) {
+    return (
+      <div className="flex flex-col gap-4">
+        {fileInputs}
+        <Steps current={1} />
+        <button
+          type="button"
+          disabled={attaching}
+          onClick={() => photoInputRef.current?.click()}
+          className="flex min-h-72 flex-col items-center justify-center gap-2.5 rounded-2xl border-[1.5px] border-dashed border-line bg-surface p-6 text-center transition-colors hover:border-accent disabled:opacity-60"
+        >
+          <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" className="text-accent" aria-hidden>
+            <path d="M4 8h3l2-3h6l2 3h3v11H4z" strokeLinejoin="round" />
+            <circle cx="12" cy="13" r="3.5" />
+          </svg>
+          <span className="text-base font-semibold">{attaching ? "Attaching…" : "Photograph the bill"}</span>
+          <span className="max-w-[24ch] text-[13px] text-ink-2">Lay it flat and fill the frame. You can add more pages next.</span>
+        </button>
+        <button type="button" disabled={attaching} onClick={() => photoInputRef.current?.click()} className={buttonClass("primary", "md", true)}>
+          Open camera
+        </button>
+        <button type="button" disabled={attaching} onClick={() => pdfInputRef.current?.click()} className={buttonClass("secondary", "md", true)}>
+          Upload a PDF instead
+        </button>
+        {error && (
+          <p role="alert" className="text-sm text-danger">
+            {error}
+          </p>
+        )}
+        {queuedDraftCount > 0 && (
+          <Notice tone="info" title={`${queuedDraftCount} bill${queuedDraftCount === 1 ? "" : "s"} waiting to send`}>
+            Saved on this phone while offline. They&apos;ll send on their own once you have signal.
+          </Notice>
+        )}
+      </div>
+    );
+  }
+
+  // ---- Step 2: check details ----
+
+  const firstPage = attachments[0];
+  const unconfirmed = unconfirmedFields(fieldConfidence, confirmed);
+  const blockedPaid = duplicate && duplicateVerdict === "blocked_paid";
+
+  function field(name: ExtractedField, input: ReactNode) {
+    const low = isLowConfidence(name, fieldConfidence[name]);
+    const needsTap = low && !confirmed.has(name);
+    const read = fieldConfidence[name] !== undefined;
+    return (
+      <div className="flex flex-col gap-1">
+        <div className="flex items-center justify-between gap-2">
+          <label htmlFor={`capture-${name}`} className={labelClass}>
+            {FIELD_LABEL[name]}
+          </label>
+          {read &&
+            (needsTap ? (
+              <span className="text-[11px] font-semibold text-warn">! Check against the bill</span>
+            ) : (
+              <span className="text-[11px] font-semibold text-ok">✓ {low ? "Confirmed" : "Read from bill"}</span>
+            ))}
+        </div>
+        <div className="flex gap-2">
+          <div className={`flex-1 ${needsTap ? "[&>input]:border-warn-line [&>input]:bg-warn-soft" : ""}`}>{input}</div>
+          {needsTap && (
+            <button type="button" onClick={() => confirm(name)} className={buttonClass("secondary", "sm")}>
+              Looks right
+            </button>
+          )}
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="flex w-full max-w-sm flex-col gap-5">
+    <div className="flex flex-col gap-4">
+      {fileInputs}
+      <Steps current={2} />
+
       <div className="flex flex-col gap-2">
-        <span className="text-sm font-medium">Bill</span>
-        <div className="flex gap-2">
-          <button
-            type="button"
-            disabled={attaching}
-            onClick={() => photoInputRef.current?.click()}
-            className="flex-1 rounded border border-zinc-300 px-3 py-3 text-sm font-medium disabled:opacity-50 dark:border-zinc-700"
-          >
-            Photograph the bill
-          </button>
-          <button
-            type="button"
-            disabled={attaching}
-            onClick={() => pdfInputRef.current?.click()}
-            className="flex-1 rounded border border-zinc-300 px-3 py-3 text-sm font-medium disabled:opacity-50 dark:border-zinc-700"
-          >
-            Choose PDF
-          </button>
-        </div>
-        <input
-          ref={photoInputRef}
-          type="file"
-          accept="image/*"
-          capture="environment"
-          className="hidden"
-          onChange={(e) => {
-            const file = e.target.files?.[0];
-            e.target.value = "";
-            if (file) void attachFile(file, true);
-          }}
-        />
-        <input
-          ref={pdfInputRef}
-          type="file"
-          accept="application/pdf"
-          className="hidden"
-          onChange={(e) => {
-            const file = e.target.files?.[0];
-            e.target.value = "";
-            if (file) void attachFile(file, false);
-          }}
-        />
-        {attaching && <p className="text-sm text-zinc-500">Attaching…</p>}
-        {extracting && <p className="text-sm text-zinc-500">Reading the bill…</p>}
-        {extractionNote && <p className="text-sm text-amber-700 dark:text-amber-400">{extractionNote}</p>}
-        {isOfflineCapture && (
-          <p className="text-sm text-amber-700 dark:text-amber-400">
-            No connection — captured locally. It&apos;ll send itself once you&apos;re back on signal.
-          </p>
+        {firstPage && firstPage.mime !== "application/pdf" ? (
+          // eslint-disable-next-line @next/next/no-img-element -- a local blob: URL, not a remote image
+          <img src={firstPage.previewUrl} alt="Page 1 of the bill" className="max-h-64 w-full rounded-lg border border-line bg-surface object-contain" />
+        ) : (
+          <div className="grid h-28 place-items-center rounded-lg border border-line bg-surface text-sm text-ink-2">
+            {firstPage ? "PDF attached" : "Saved on this phone"}
+          </div>
         )}
-        {queuedDraftCount > 0 && (
-          <p className="text-sm text-zinc-500">
-            {queuedDraftCount} draft{queuedDraftCount === 1 ? "" : "s"} waiting to upload. They&apos;ll send themselves when you&apos;re back on signal.
-          </p>
-        )}
-        {(attachments.length > 0 || offlineQueue.length > 0) && (
-          <ul className="flex flex-col gap-1">
-            {attachments.map((a, i) => (
-              <li key={a.fileId} className="flex items-center justify-between rounded bg-zinc-100 px-3 py-2 text-sm dark:bg-zinc-900">
-                <span>Page {i + 1} — {a.mime === "application/pdf" ? "PDF" : "photo"}</span>
-                <button type="button" onClick={() => removeAttachment(a.fileId)} className="text-red-600 dark:text-red-400">
-                  Remove
-                </button>
-              </li>
-            ))}
-            {offlineQueue.map((a, i) => (
-              <li key={`offline-${i}`} className="flex items-center justify-between rounded bg-amber-100 px-3 py-2 text-sm dark:bg-amber-950">
-                <span>Page {attachments.length + i + 1} — {a.mime === "application/pdf" ? "PDF" : "photo"} (offline)</span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-
-      <label className="flex flex-col gap-1">
-        <span className="text-sm font-medium">Department</span>
-        <select
-          value={departmentId}
-          onChange={(e) => setDepartmentId(e.target.value)}
-          className="rounded border border-zinc-300 px-3 py-2 dark:border-zinc-700 dark:bg-black"
-        >
-          {departments.map((d) => (
-            <option key={d.id} value={d.id}>
-              {d.name}
-            </option>
-          ))}
-        </select>
-      </label>
-
-      <label className="flex flex-col gap-1">
-        <span className="flex items-center justify-between text-sm font-medium">
-          Amount <ConfidenceBadge confidence={fieldConfidence.amount} />
-        </span>
-        <input
-          type="text"
-          inputMode="decimal"
-          value={amount}
-          onChange={(e) => setAmount(e.target.value)}
-          placeholder="0.00"
-          className="rounded border border-zinc-300 px-3 py-2 dark:border-zinc-700 dark:bg-black"
-        />
-      </label>
-
-      <label className="flex flex-col gap-1">
-        <span className="flex items-center justify-between text-sm font-medium">
-          Vendor <ConfidenceBadge confidence={fieldConfidence.vendor} />
-        </span>
-        <input
-          type="text"
-          value={vendor}
-          onChange={(e) => setVendor(e.target.value)}
-          className="rounded border border-zinc-300 px-3 py-2 dark:border-zinc-700 dark:bg-black"
-        />
-      </label>
-
-      <label className="flex flex-col gap-1">
-        <span className="flex items-center justify-between text-sm font-medium">
-          Invoice number <ConfidenceBadge confidence={fieldConfidence.invoiceNo} />
-        </span>
-        <input
-          type="text"
-          value={invoiceNo}
-          onChange={(e) => setInvoiceNo(e.target.value)}
-          className="rounded border border-zinc-300 px-3 py-2 dark:border-zinc-700 dark:bg-black"
-        />
-      </label>
-
-      <label className="flex flex-col gap-1">
-        <span className="flex items-center justify-between text-sm font-medium">
-          Invoice date <ConfidenceBadge confidence={fieldConfidence.invoiceDate} />
-        </span>
-        <input
-          type="date"
-          value={invoiceDate}
-          onChange={(e) => setInvoiceDate(e.target.value)}
-          className="rounded border border-zinc-300 px-3 py-2 dark:border-zinc-700 dark:bg-black"
-        />
-      </label>
-
-      <label className="flex flex-col gap-1">
-        <span className="flex items-center justify-between text-sm font-medium">
-          GSTIN on bill <ConfidenceBadge confidence={fieldConfidence.gstin} />
-        </span>
-        <input
-          type="text"
-          value={gstinOnBill}
-          onChange={(e) => setGstinOnBill(e.target.value)}
-          className="rounded border border-zinc-300 px-3 py-2 dark:border-zinc-700 dark:bg-black"
-        />
-      </label>
-
-      <label className="flex flex-col gap-1">
-        <span className="text-sm font-medium">Note (optional)</span>
-        <textarea
-          value={note}
-          onChange={(e) => setNote(e.target.value)}
-          rows={3}
-          className="rounded border border-zinc-300 px-3 py-2 dark:border-zinc-700 dark:bg-black"
-        />
-      </label>
-
-      {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
-
-      {duplicate && duplicateVerdict === "warned_open" && (
-        <div className="rounded border border-amber-400 bg-amber-50 p-3 text-sm dark:border-amber-800 dark:bg-amber-950">
-          <p className="font-medium">Seen this before?</p>
-          <p>
-            A byte-identical file was already raised on a request in stage &quot;{duplicate.stage}&quot;
-            {duplicate.invoiceDate && <> · invoiced {duplicate.invoiceDate}</>}. Worth a quick check before submitting.
-          </p>
-        </div>
-      )}
-
-      {duplicate && duplicateVerdict === "blocked_paid" && (
-        <div className="flex flex-col gap-2 rounded border border-red-400 bg-red-50 p-3 text-sm dark:border-red-800 dark:bg-red-950">
-          <p className="font-medium">This looks like a duplicate of an already-paid bill.</p>
-          {duplicate.viewableByActor ? (
-            <p>
-              Matches request in stage &quot;{duplicate.stage}&quot;{duplicate.reference && <> · UTR {duplicate.reference}</>}
-              {duplicate.invoiceDate && <> · invoiced {duplicate.invoiceDate}</>}.
-            </p>
-          ) : (
-            <p>Matches a request in a department you can&apos;t see{duplicate.viewerHint && <> — {duplicate.viewerHint}</>}.</p>
-          )}
-          {canOverrideDuplicate && (
-            <div className="flex flex-col gap-2 border-t border-red-300 pt-2 dark:border-red-800">
-              <textarea
-                value={overrideReason}
-                onChange={(e) => setOverrideReason(e.target.value)}
-                placeholder="Reason for overriding this match"
-                rows={2}
-                className="rounded border border-zinc-300 px-3 py-2 text-sm dark:border-zinc-700 dark:bg-black"
-              />
+        <ul className="flex flex-wrap items-center gap-2" aria-label="Pages">
+          {attachments.map((a, i) => (
+            <li key={a.fileId} className="flex items-center gap-1 rounded-md border border-line bg-surface py-1 pr-1 pl-2 text-xs text-ink-2">
+              Page {i + 1}
               <button
                 type="button"
-                disabled={submitting || !overrideReason.trim()}
-                onClick={() => void handleSubmit(overrideReason)}
-                className="self-start rounded border border-red-500 px-3 py-2 text-sm font-medium text-red-700 disabled:opacity-50 dark:text-red-300"
+                onClick={() => removeAttachment(a.fileId)}
+                aria-label={`Remove page ${i + 1}`}
+                className="grid size-5 place-items-center rounded text-ink-3 hover:bg-danger-soft hover:text-danger"
               >
-                Override and submit anyway
+                ×
               </button>
-            </div>
-          )}
-        </div>
+            </li>
+          ))}
+          {offlineQueue.map((_, i) => (
+            <li key={`offline-${i}`} className="rounded-md border border-warn-line bg-warn-soft px-2 py-1 text-xs text-warn">
+              Page {attachments.length + i + 1} · on phone
+            </li>
+          ))}
+          <li>
+            <button type="button" disabled={attaching} onClick={() => photoInputRef.current?.click()} className={buttonClass("ghost", "sm")}>
+              {attaching ? "Attaching…" : "+ Add a page"}
+            </button>
+          </li>
+        </ul>
+      </div>
+
+      {isOfflineCapture && (
+        <Notice tone="warn" title="You're offline">
+          The bill is saved on this phone. Fill in what you can — it sends on its own once you&apos;re back on signal.
+        </Notice>
       )}
 
-      <button
-        type="button"
-        disabled={submitting || attaching || extracting || (attachments.length === 0 && offlineQueue.length === 0) || !departmentId}
-        onClick={() => void handleSubmit()}
-        className="rounded bg-black px-4 py-3 font-medium text-white disabled:opacity-50 dark:bg-white dark:text-black"
-      >
-        {submitting ? "Submitting…" : isOfflineCapture ? "Queue" : "Submit"}
-      </button>
+      {extracting ? (
+        <div className="flex flex-col gap-3 rounded-lg border border-line-soft bg-surface p-4">
+          <p className="flex items-center gap-2.5 text-sm text-ink-2" role="status">
+            <span className="size-4 animate-spin rounded-full border-2 border-accent border-r-transparent motion-reduce:animate-none" aria-hidden />
+            Reading the bill… usually under 10 seconds
+          </p>
+          <button type="button" onClick={skipReading} className={buttonClass("secondary", "md", true)}>
+            Skip — I&apos;ll type the details
+          </button>
+        </div>
+      ) : (
+        <>
+          {extractionNote && <Notice tone="warn" title="Couldn't read this bill">Enter the details below.</Notice>}
+
+          {duplicate && duplicateVerdict === "warned_open" && (
+            <Notice tone="warn" title="Seen this bill before?">
+              The same file is already on a request that is {duplicate.stage.replaceAll("_", " ")}
+              {duplicate.invoiceDate && <>, invoiced {duplicate.invoiceDate}</>}. Check you&apos;re not raising it twice.
+            </Notice>
+          )}
+
+          {blockedPaid && (
+            <Notice tone="danger" title="Already paid">
+              {duplicate.viewableByActor ? (
+                <>
+                  This bill matches a request that is {duplicate.stage.replaceAll("_", " ")}
+                  {duplicate.reference && <>, UTR <span className="font-mono">{duplicate.reference}</span></>}
+                  {duplicate.invoiceDate && <>, invoiced {duplicate.invoiceDate}</>}. It can&apos;t be raised again.
+                </>
+              ) : (
+                <>It matches a request in a department you can&apos;t see{duplicate.viewerHint && <> — {duplicate.viewerHint}</>}.</>
+              )}
+              {canOverrideDuplicate && (
+                <div className="mt-2 flex flex-col gap-2 border-t border-danger-line pt-2">
+                  <label htmlFor="capture-override" className={labelClass}>
+                    Super admin override — reason
+                  </label>
+                  <textarea id="capture-override" value={overrideReason} onChange={(e) => setOverrideReason(e.target.value)} rows={2} className={inputClass} />
+                  <button
+                    type="button"
+                    disabled={submitting || !overrideReason.trim()}
+                    onClick={() => void handleSubmit(overrideReason)}
+                    className={`${buttonClass("danger", "sm")} self-start`}
+                  >
+                    Override and send
+                  </button>
+                </div>
+              )}
+            </Notice>
+          )}
+
+          {field(
+            "amount",
+            <div className="relative">
+              <span className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 font-mono text-ink-3">₹</span>
+              <input
+                id="capture-amount"
+                type="text"
+                inputMode="decimal"
+                value={amount}
+                onChange={(e) => edit("amount", setAmount)(e.target.value)}
+                placeholder="0.00"
+                className={`${inputClass} pl-7 font-mono text-lg tabular-nums`}
+              />
+            </div>,
+          )}
+          {field("vendor", <input id="capture-vendor" type="text" value={vendor} onChange={(e) => edit("vendor", setVendor)(e.target.value)} className={inputClass} />)}
+          <div className="grid grid-cols-1 gap-4 min-[360px]:grid-cols-2">
+            {field(
+              "invoiceNo",
+              <input id="capture-invoiceNo" type="text" value={invoiceNo} onChange={(e) => edit("invoiceNo", setInvoiceNo)(e.target.value)} className={`${inputClass} font-mono`} />,
+            )}
+            {field(
+              "invoiceDate",
+              <input id="capture-invoiceDate" type="date" value={invoiceDate} onChange={(e) => edit("invoiceDate", setInvoiceDate)(e.target.value)} className={`${inputClass} font-mono`} />,
+            )}
+          </div>
+
+          {showGstin || gstinOnBill || isLowConfidence("gstin", fieldConfidence.gstin) ? (
+            field(
+              "gstin",
+              <input id="capture-gstin" type="text" value={gstinOnBill} onChange={(e) => edit("gstin", setGstinOnBill)(e.target.value)} className={`${inputClass} font-mono uppercase`} />,
+            )
+          ) : (
+            <button type="button" onClick={() => setShowGstin(true)} className={`${buttonClass("ghost", "sm")} self-start`}>
+              + GSTIN on bill
+            </button>
+          )}
+
+          <div className="flex flex-col gap-1">
+            <label htmlFor="capture-department" className={labelClass}>
+              Department
+            </label>
+            {departments.length === 1 ? (
+              <p id="capture-department" className="text-sm">
+                {departments[0].name}
+              </p>
+            ) : (
+              <select id="capture-department" value={departmentId} onChange={(e) => setDepartmentId(e.target.value)} className={inputClass}>
+                {departments.map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.name}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <label htmlFor="capture-note" className={labelClass}>
+              Note for the approver <span className="font-normal text-ink-3">optional</span>
+            </label>
+            <textarea id="capture-note" value={note} onChange={(e) => setNote(e.target.value)} rows={3} className={inputClass} />
+          </div>
+
+          {error && (
+            <p role="alert" className="text-sm text-danger">
+              {error}
+            </p>
+          )}
+
+          <div className="flex flex-col gap-1.5">
+            {unconfirmed.length > 0 && (
+              <p className="text-[12.5px] text-warn">
+                Check {unconfirmed.map((f) => FIELD_LABEL[f].toLowerCase()).join(", ")} against the bill, then tap &ldquo;Looks right&rdquo;.
+              </p>
+            )}
+            <button
+              type="button"
+              disabled={submitting || attaching || !departmentId || unconfirmed.length > 0 || !!blockedPaid}
+              onClick={() => void handleSubmit()}
+              className={buttonClass("primary", "md", true)}
+            >
+              {submitting ? "Sending…" : isOfflineCapture ? "Save to send later" : "Send to approver"}
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 }
