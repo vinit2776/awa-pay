@@ -43,7 +43,7 @@ export default async function Home() {
         )}
       </div>
 
-      {tiles.length > 0 ? (
+      {tiles.length > 0 && (
         <ul className="grid grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-3">
           {tiles.map((t) => (
             <li key={t.href}>
@@ -64,10 +64,20 @@ export default async function Home() {
             </li>
           ))}
         </ul>
-      ) : (
-        <p className="max-w-prose text-ink-2">
-          None of your roles has a queue here yet. Super admin and developer tools will appear on this page once they&apos;re built.
-        </p>
+      )}
+
+      {roles.has("super_admin") && (
+        <Link
+          href="/admin"
+          className="flex flex-col gap-1 rounded-xl border border-line bg-surface p-4 transition-colors hover:border-accent focus-visible:outline-2 focus-visible:outline-accent sm:max-w-sm"
+        >
+          <span className={eyebrowClass}>People &amp; access</span>
+          <span className="text-[13px] text-ink-2">Grant and revoke roles, and see who can approve or pay.</span>
+        </Link>
+      )}
+
+      {tiles.length === 0 && !roles.has("super_admin") && (
+        <p className="max-w-prose text-ink-2">None of your roles has a queue here yet. Developer tools will appear on this page once they&apos;re built.</p>
       )}
     </div>
   );

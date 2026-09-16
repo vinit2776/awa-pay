@@ -11,6 +11,7 @@ const ICON_PATH: Record<NavIcon, string> = {
   approve: "M5 12l4 4 10-10",
   account: "M5 4h14v16H5zM8 8h8M8 12h8M8 16h4",
   pay: "M3 7h18v10H3zM3 11h18",
+  admin: "M12 12a3.5 3.5 0 100-7 3.5 3.5 0 000 7zM5 20c1-4 3.8-5.5 7-5.5s6 1.5 7 5.5",
 };
 
 function Icon({ name, className }: { name: NavIcon; className?: string }) {

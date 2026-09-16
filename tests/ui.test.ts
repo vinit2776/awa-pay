@@ -58,8 +58,14 @@ describe("nav", () => {
     expect(items.find((i) => i.href === "/requests")?.count).toBe(2);
   });
 
-  it("gives super admins and developers only Home", () => {
-    expect(buildNavItems(new Set(["super_admin", "developer"]), {}).map((i) => i.href)).toEqual(["/"]);
+  it("gives a super admin the access console, and never a queue", () => {
+    const items = buildNavItems(new Set(["super_admin"]), {});
+    expect(items.map((i) => i.href)).toEqual(["/", "/admin"]);
+    expect(items.every((i) => i.count === undefined)).toBe(true);
+  });
+
+  it("gives a developer only Home", () => {
+    expect(buildNavItems(new Set(["developer"]), {}).map((i) => i.href)).toEqual(["/"]);
   });
 
   it("highlights the longest matching tab", () => {

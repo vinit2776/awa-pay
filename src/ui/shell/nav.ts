@@ -1,7 +1,7 @@
 // Pure nav rules, shared by the server shell (which builds the items from
 // role grants) and the client tabs (which highlight the current one).
 
-export type NavIcon = "home" | "raise" | "mine" | "approve" | "account" | "pay";
+export type NavIcon = "home" | "raise" | "mine" | "approve" | "account" | "pay" | "admin";
 
 export type NavItem = {
   href: string;
@@ -26,6 +26,9 @@ export function buildNavItems(roles: ReadonlySet<string>, counts: NavCounts): Na
   if (roles.has("approver")) items.push({ href: "/approvals", label: "Approvals", short: "Approve", icon: "approve", count: counts.approver });
   if (roles.has("accountant")) items.push({ href: "/accounts", label: "To account", short: "Account", icon: "account", count: counts.accountant });
   if (roles.has("payer")) items.push({ href: "/payments", label: "To pay", short: "Pay", icon: "pay", count: counts.payer });
+  // Last, and never counted: the super admin configures access, and never
+  // approves or pays (AGENTS.md "Roles and scope").
+  if (roles.has("super_admin")) items.push({ href: "/admin", label: "People & access", short: "Access", icon: "admin" });
   return items;
 }
 
