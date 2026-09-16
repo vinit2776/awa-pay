@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { buttonClass } from "@/ui/styles";
 import { withdrawAction } from "./actions";
 
 export function WithdrawButton({ requestId }: { requestId: string }) {
@@ -26,13 +27,12 @@ export function WithdrawButton({ requestId }: { requestId: string }) {
 
   return (
     <div className="flex flex-col gap-1">
-      {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
-      <button
-        type="button"
-        disabled={pending}
-        onClick={() => void withdraw()}
-        className="rounded border border-red-400 px-4 py-2 text-center text-sm font-medium text-red-600 disabled:opacity-50 dark:border-red-800 dark:text-red-400"
-      >
+      {error && (
+        <p role="alert" className="text-sm text-danger">
+          {error}
+        </p>
+      )}
+      <button type="button" disabled={pending} onClick={() => void withdraw()} className={buttonClass("danger", "md")}>
         {pending ? "Withdrawing…" : "Withdraw"}
       </button>
     </div>
