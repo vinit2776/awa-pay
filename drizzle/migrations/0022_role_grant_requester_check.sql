@@ -1,0 +1,1 @@
+ALTER TABLE "role_grant" ADD CONSTRAINT "role_grant_requester_not_global_check" CHECK ("role_grant"."role" <> 'requester' or "role_grant"."dept_scope" <> 'global');

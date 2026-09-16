@@ -40,6 +40,11 @@ export default async function Home() {
             To pay
           </Link>
         )}
+        {roles.has("super_admin") && (
+          <Link href="/admin" className="underline">
+            Admin
+          </Link>
+        )}
       </nav>
 
       <form action={logout}>
