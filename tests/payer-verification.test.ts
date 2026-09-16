@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull, or } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { closeOwnerConnection, dbOwner } from "../scripts/db-owner";
 import { withGrantScope } from "../src/db/runtime";
-import { accounting, company, department, event, headOfAccount, payment, request, requestFile, roleGrant, user, vendor, vendorBank, vendorDocument } from "../src/db/schema";
+import { accounting, company, department, duplicateCheck, event, headOfAccount, payment, request, requestFile, roleGrant, user, vendor, vendorBank, vendorDocument } from "../src/db/schema";
 import { hashSecret } from "../src/auth/password";
 import { submitRequest, type Attachment } from "../src/requests/captureCore";
 import { accountRequest, approveRequest, payRequest } from "../src/requests/transitions";
@@ -105,6 +105,14 @@ afterAll(async () => {
     await dbOwner.delete(accounting).where(inArray(accounting.requestId, reqIds));
     await dbOwner.delete(event).where(inArray(event.requestId, reqIds));
     await dbOwner.delete(requestFile).where(inArray(requestFile.requestId, reqIds));
+    // A submit that surfaces a match records a duplicate_check row, and
+    // BOTH of its columns are foreign keys to request — request_id for
+    // this submission, matched_request_id for the older one it matched.
+    // Either side pointing at a fixture request blocks the delete below,
+    // so both are cleared.
+    await dbOwner
+      .delete(duplicateCheck)
+      .where(or(inArray(duplicateCheck.requestId, reqIds), inArray(duplicateCheck.matchedRequestId, reqIds)));
     await dbOwner.delete(request).where(inArray(request.id, reqIds));
   }
   await dbOwner.delete(roleGrant).where(inArray(roleGrant.userId, userIds));
