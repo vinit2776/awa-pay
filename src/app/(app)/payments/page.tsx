@@ -1,88 +1,84 @@
-import { and, eq, inArray } from "drizzle-orm";
-import Link from "next/link";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import { verifySession } from "@/auth/dal";
 import { withGrantScope } from "@/db/runtime";
-import { event, request } from "@/db/schema";
+import { company, department, event, request } from "@/db/schema";
 import { computeFlags, loadFlagContext } from "@/flags/computeFlags";
-import { FlagChips } from "@/ui/FlagChips";
 import { formatMinorUnits } from "@/lib/money";
+import { loadStageEntered } from "@/requests/queueData";
+import { CYCLE_GROUP_LABEL, comparePayments, cycleGroup, daysSince, groupRows, shortDate, todayInIndia, type CycleGroup } from "@/requests/queueRows";
+import { QueueHeader } from "@/ui/QueueHeader";
+import { QueueList, type QueueRow } from "@/ui/QueueList";
 
-// Sort key: immediate first, then dated by due date ascending, then
-// discretionary last — the brief's own payer-queue ordering. dueDate
-// itself comes straight off the request row (phase 12's cached column);
-// only "immediate" vs "unspecified" (both have no due date, but sort
-// differently) still isn't distinguishable without the cycle text, which
-// isn't cached — read from the (possibly re-approved, so "latest")
-// request.approved event, same as before.
-function cycleSortKey(cycle: string | undefined, dueDate: string | null): [number, string] {
-  if (cycle === "immediate") return [0, ""];
-  if (cycle === "dated") return [1, dueDate ?? ""];
-  return [2, ""];
-}
+const GROUP_ORDER: CycleGroup[] = ["immediate", "dated", "unspecified"];
 
 export default async function PaymentsQueuePage() {
   const session = await verifySession();
+  const now = new Date();
+  const today = todayInIndia(now);
 
-  const [requests, flagContext] = await withGrantScope(session.userId, "payer", async (tx) => {
-    const rows = await tx.select().from(request).where(eq(request.stage, "to_pay"));
-    return [rows, await loadFlagContext(tx, rows)] as const;
+  const [rows, flagContext, stageEntered, approveEvents] = await withGrantScope(session.userId, "payer", async (tx) => {
+    const result = await tx
+      .select({ request, departmentName: department.name, companyName: company.name })
+      .from(request)
+      .innerJoin(department, eq(department.id, request.departmentId))
+      .leftJoin(company, eq(company.id, request.companyId))
+      .where(eq(request.stage, "to_pay"));
+    const requests = result.map((r) => r.request);
+    const ids = requests.map((r) => r.id);
+    // dueDate is cached on the request (phase 12), but "immediate" and
+    // "payer decides" both have no due date and still sort differently, so
+    // the cycle itself comes from the latest request.approved event — a
+    // request can be re-approved after a return, and the latest one wins.
+    const approvals =
+      ids.length === 0
+        ? []
+        : await tx
+            .select({ requestId: event.requestId, after: event.after })
+            .from(event)
+            .where(and(inArray(event.requestId, ids), eq(event.type, "request.approved")))
+            .orderBy(asc(event.at));
+    return [result, await loadFlagContext(tx, requests), await loadStageEntered(tx, requests), approvals] as const;
   });
 
-  const requestIds = requests.map((r) => r.id);
-  const approveEvents =
-    requestIds.length === 0
-      ? []
-      : await withGrantScope(session.userId, "payer", (tx) =>
-          tx
-            .select()
-            .from(event)
-            .where(and(inArray(event.requestId, requestIds), eq(event.type, "request.approved"))),
-        );
-
-  const latestCycleByRequest = new Map<string, string>();
+  const latestCycle = new Map<string, string>();
   for (const e of approveEvents) {
-    const after = e.after as { cycle?: string } | null;
-    if (!after?.cycle) continue;
-    latestCycleByRequest.set(e.requestId as string, after.cycle);
+    const cycle = (e.after as { cycle?: unknown } | null)?.cycle;
+    if (e.requestId && typeof cycle === "string") latestCycle.set(e.requestId, cycle);
   }
 
-  const sorted = [...requests].sort((a, b) => {
-    const [orderA, dueA] = cycleSortKey(latestCycleByRequest.get(a.id), a.dueDate);
-    const [orderB, dueB] = cycleSortKey(latestCycleByRequest.get(b.id), b.dueDate);
-    if (orderA !== orderB) return orderA - orderB;
-    return dueA.localeCompare(dueB);
-  });
+  const sorted = rows
+    .map((row) => ({ ...row, cycle: latestCycle.get(row.request.id) }))
+    .sort((a, b) => comparePayments({ cycle: a.cycle, dueDate: a.request.dueDate }, { cycle: b.cycle, dueDate: b.request.dueDate }));
+
+  const toRow = ({ request: r, departmentName, companyName, cycle }: (typeof sorted)[number]): QueueRow => {
+    const days = daysSince(stageEntered.get(r.id) ?? r.createdAt, now);
+    const dated = cycleGroup(cycle) === "dated" && r.dueDate;
+    return {
+      id: r.id,
+      href: `/requests/${r.id}`,
+      ref: r.ref,
+      title: r.vendor ?? "Unknown vendor",
+      meta: [companyName, departmentName].filter(Boolean).join(" · "),
+      flags: computeFlags(r, flagContext),
+      amountMinor: r.amountMinor,
+      currency: r.currency,
+      aside: dated ? `due ${shortDate(r.dueDate!)}` : `${days}d in stage`,
+      asideTone: dated && r.dueDate! <= today ? "late" : "muted",
+    };
+  };
+
+  const groups = groupRows(sorted, (r) => cycleGroup(r.cycle), GROUP_ORDER).map((g) => ({
+    key: g.key,
+    label: CYCLE_GROUP_LABEL[g.key as CycleGroup],
+    rows: g.rows.map(toRow),
+  }));
+
+  const total = rows.filter((r) => r.request.currency === "INR").reduce((sum, r) => sum + r.request.amountMinor, 0);
 
   return (
-    <div className="flex flex-1 flex-col gap-4 px-4 py-8">
-      <h1 className="text-2xl font-semibold">To pay</h1>
-      {sorted.length === 0 && <p className="text-zinc-600 dark:text-zinc-400">Nothing waiting.</p>}
-      <ul className="flex flex-col gap-2">
-        {sorted.map((r) => {
-          const cycle = latestCycleByRequest.get(r.id);
-          return (
-            <li key={r.id}>
-              <Link
-                href={`/requests/${r.id}`}
-                className="flex items-center justify-between rounded border border-zinc-300 px-4 py-3 dark:border-zinc-700"
-              >
-                <span>
-                  <span className="font-medium">{r.ref}</span>
-                  {r.vendor && <span className="text-zinc-600 dark:text-zinc-400"> · {r.vendor}</span>}
-                  {cycle === "immediate" && (
-                    <span className="ml-2 rounded bg-red-100 px-2 py-0.5 text-xs text-red-800 dark:bg-red-900 dark:text-red-200">
-                      immediate
-                    </span>
-                  )}
-                  {cycle === "dated" && r.dueDate && <span className="text-zinc-600 dark:text-zinc-400"> · due {r.dueDate}</span>}
-                  <FlagChips flags={computeFlags(r, flagContext)} />
-                </span>
-                <span className="font-medium">{formatMinorUnits(r.amountMinor, r.currency)}</span>
-              </Link>
-            </li>
-          );
-        })}
-      </ul>
+    <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col gap-5 px-4 py-6">
+      <QueueHeader title="To pay" summary={rows.length === 0 ? undefined : `${rows.length} to pay · ${formatMinorUnits(total)} before TDS`} />
+      <QueueList groups={groups} empty="Nothing waiting to be paid." />
     </div>
   );
 }
