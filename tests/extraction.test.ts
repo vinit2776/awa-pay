@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, or } from "drizzle-orm";
 import sharp from "sharp";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { closeOwnerConnection, dbOwner } from "../scripts/db-owner";
 import { hashSecret } from "../src/auth/password";
 import { withGrantScope } from "../src/db/runtime";
-import { department, event, extraction, extractionAttempt, request, requestFile, roleGrant, user } from "../src/db/schema";
+import { department, duplicateCheck, event, extraction, extractionAttempt, request, requestFile, roleGrant, user } from "../src/db/schema";
 import { computeDHash } from "../src/extraction/dhash";
 import { needsEscalation, runExtraction } from "../src/extraction/extractCore";
 import { parseExtractedFields } from "../src/extraction/schema";
@@ -147,6 +147,14 @@ afterAll(async () => {
   if (reqIds.length > 0) {
     await dbOwner.delete(event).where(inArray(event.requestId, reqIds));
     await dbOwner.delete(requestFile).where(inArray(requestFile.requestId, reqIds));
+    // A submit that surfaces a match records a duplicate_check row, and
+    // BOTH of its columns are foreign keys to request — request_id for
+    // this submission, matched_request_id for the older one it matched.
+    // Either side pointing at a fixture request blocks the delete below,
+    // so both are cleared.
+    await dbOwner
+      .delete(duplicateCheck)
+      .where(or(inArray(duplicateCheck.requestId, reqIds), inArray(duplicateCheck.matchedRequestId, reqIds)));
     await dbOwner.delete(request).where(inArray(request.id, reqIds));
   }
   await dbOwner.delete(roleGrant).where(inArray(roleGrant.userId, userIds));

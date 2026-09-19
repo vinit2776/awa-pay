@@ -1,8 +1,8 @@
-import { inArray } from "drizzle-orm";
+import { inArray, or } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { closeOwnerConnection, dbOwner } from "../scripts/db-owner";
 import { __unscopedRuntimeConnectionForGateTestOnly, withGrantScope } from "../src/db/runtime";
-import { department, request, roleGrant, user } from "../src/db/schema";
+import { department, duplicateCheck, request, roleGrant, user } from "../src/db/schema";
 
 // The gate, per docs/START-HERE.md phase 1: proves an unscoped query as the
 // runtime role returns nothing even when matching rows exist, and that a
@@ -77,7 +77,16 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await dbOwner.delete(request).where(inArray(request.id, [requestA.id, requestB.id]));
+  // A submit that surfaces a match records a duplicate_check row, and
+  // BOTH of its columns are foreign keys to request — request_id for
+  // this submission, matched_request_id for the older one it matched.
+  // Either side pointing at a fixture request blocks the delete below,
+  // so both are cleared.
+  const requestIds = [requestA.id, requestB.id];
+  await dbOwner
+    .delete(duplicateCheck)
+    .where(or(inArray(duplicateCheck.requestId, requestIds), inArray(duplicateCheck.matchedRequestId, requestIds)));
+  await dbOwner.delete(request).where(inArray(request.id, requestIds));
   await dbOwner.delete(roleGrant).where(inArray(roleGrant.userId, [requesterUser.id]));
   await dbOwner.delete(department).where(inArray(department.id, [deptA.id, deptB.id]));
   await dbOwner.delete(user).where(inArray(user.id, [requesterUser.id]));
