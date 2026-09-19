@@ -19,6 +19,14 @@ export type QueuedDraft = {
   vendor: string;
   gstinOnBill: string;
   note: string;
+  // Advances and part-payments. All optional so drafts already sitting in
+  // users' IndexedDB (which predate them) still load; a missing kind means
+  // "invoice", a missing payNow means the whole amount.
+  kind?: "invoice" | "advance";
+  payNow?: string;
+  payNowReason?: string;
+  quotationNo?: string;
+  invoiceExpectedBy?: string;
   attachments: QueuedAttachment[];
   createdAt: number;
 };

@@ -1,4 +1,4 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { type Role, type ScopedTx, withGrantScope } from "@/db/runtime";
 import {
   accounting,
@@ -13,6 +13,7 @@ import {
 } from "@/db/schema";
 import { actorHoldsRole, checkDuplicates, recordDuplicateCheck, type DuplicateMatch, type DuplicateVerdict } from "@/duplicates/duplicateCore";
 import { appendEvent } from "@/events/append";
+import { formatMinorUnits } from "@/lib/money";
 import { headObjectContentLength } from "@/storage/r2";
 import { checkPaymentBankReadiness } from "@/vendors/verifyCore";
 
@@ -50,7 +51,8 @@ export type TransitionName =
   | "pay"
   | "returnToAccounts"
   | "resubmit"
-  | "withdraw";
+  | "withdraw"
+  | "attachInvoice";
 
 const TRANSITIONS: Record<
   TransitionName,
@@ -69,6 +71,11 @@ const TRANSITIONS: Record<
   returnToAccounts: { requiredRole: "payer", fromStages: ["to_pay"], toStage: "with_accounts", eventType: "request.returned_to_accounts" },
   resubmit: { requiredRole: "requester", fromStages: ["raised"], toStage: "awaiting_approval", eventType: "request.resubmitted" },
   withdraw: { requiredRole: "requester", fromStages: ["raised"], toStage: "withdrawn", eventType: "request.withdrawn" },
+  // An advance stays open after its money has moved, waiting on the tax
+  // invoice. The requester attaches it, which puts the balance in the
+  // payer's queue. fromStages stays inside request_update's requester
+  // branch (0024) — see the load-bearing note in runTransition.
+  attachInvoice: { requiredRole: "requester", fromStages: ["awaiting_invoice"], toStage: "to_pay", eventType: "request.invoice_attached" },
 };
 
 export type TransitionResult =
@@ -88,7 +95,10 @@ async function runTransition(
   patch:
     | Partial<typeof request.$inferInsert>
     | ((tx: ScopedTx, req: RequestRow) => Partial<typeof request.$inferInsert> | Promise<Partial<typeof request.$inferInsert>>),
-  buildAfter: (tx: ScopedTx, req: RequestRow) => Promise<{ objectType: string; objectId: string; after: Record<string, unknown> }>,
+  buildAfter: (
+    tx: ScopedTx,
+    req: RequestRow,
+  ) => Promise<{ objectType: string; objectId: string; after: Record<string, unknown>; eventType?: string }>,
 ): Promise<TransitionResult> {
   const spec = TRANSITIONS[name];
 
@@ -142,10 +152,10 @@ async function runTransition(
     // needs to change belongs in this single combined SET.
     await tx
       .update(request)
-      .set({ ...resolvedPatch, stage: spec.toStage, updatedAt: new Date() })
+      .set({ stage: spec.toStage, ...resolvedPatch, updatedAt: new Date() })
       .where(eq(request.id, req.id));
 
-    const { objectType, objectId, after } = await buildAfter(tx, req);
+    const { objectType, objectId, after, eventType } = await buildAfter(tx, req);
 
     const selfActioned = actorId === req.raisedBy;
     await appendEvent(
@@ -154,7 +164,7 @@ async function runTransition(
         requestId: req.id,
         actor: actorId,
         roleAtTime: spec.requiredRole,
-        type: spec.eventType,
+        type: eventType ?? spec.eventType,
         objectType,
         objectId,
         before: { stage: req.stage },
@@ -169,6 +179,101 @@ async function runTransition(
 }
 
 export type PaymentCycle = "unspecified" | "immediate" | "dated";
+
+export type AttachInvoiceParams = {
+  invoiceNo: string;
+  invoiceDate: string;
+  amountMinor: number;
+  attachments: ResubmitAttachment[];
+};
+
+// The second half of an advance: the vendor's tax invoice has arrived and
+// the requester who raised the advance attaches it. The request's amount
+// becomes the real invoice total, and the request returns to the payer's
+// queue for the balance (invoice total less what the advance already paid).
+export async function attachInvoice(
+  actorId: string,
+  requestId: string,
+  params: AttachInvoiceParams,
+  meta: Meta,
+): Promise<TransitionResult> {
+  if (!params.invoiceNo.trim()) return { ok: false, error: "Enter the invoice number." };
+  if (!params.invoiceDate) return { ok: false, error: "Enter the invoice date." };
+  if (params.amountMinor <= 0) return { ok: false, error: "Enter a valid amount." };
+  if (params.attachments.length === 0) return { ok: false, error: "Attach a photo or PDF of the invoice." };
+
+  // Same ownership check withdrawRequest makes: request_update's requester
+  // branch is department-pool-wide, so raisedBy is what actually limits
+  // this to the person who raised the advance.
+  const [req] = await withGrantScope(actorId, "requester", (tx) => tx.select().from(request).where(eq(request.id, requestId)));
+  if (!req) return { ok: false, error: "Request not found." };
+  if (req.raisedBy !== actorId) return { ok: false, error: "Only the requester who raised this can attach its invoice." };
+  if (req.kind !== "advance") return { ok: false, error: "Only an advance is waiting for an invoice." };
+
+  for (const attachment of params.attachments) {
+    const actualLength = await headObjectContentLength(attachment.storageKey);
+    if (actualLength === null || actualLength !== attachment.byteLength) {
+      return { ok: false, error: "One of the uploaded files could not be verified. Please try again." };
+    }
+  }
+
+  try {
+    return await runTransition(
+      actorId,
+      "attachInvoice",
+      requestId,
+      meta,
+      null,
+      async (tx, locked) => {
+        const settled = await sumSettledMinor(tx, locked.id);
+        if (params.amountMinor < settled) {
+          throw new LedgerRejection(
+            `The invoice is ${formatMinorUnits(params.amountMinor, locked.currency)}, less than the ${formatMinorUnits(settled, locked.currency)} already paid as an advance. Tell accounts — the vendor may owe a refund.`,
+          );
+        }
+        return {
+          invoiceNo: params.invoiceNo.trim(),
+          invoiceDate: params.invoiceDate,
+          amountMinor: params.amountMinor,
+          invoiceAttachedAt: new Date(),
+          // The advance can't have been asked for at more than the invoice
+          // it turned out to be (request_pay_now_within_total_check).
+          payNowMinor: Math.min(locked.payNowMinor ?? params.amountMinor, params.amountMinor),
+        };
+      },
+      async (tx, locked) => {
+        const existingCount = await tx.$count(requestFile, and(eq(requestFile.requestId, locked.id), eq(requestFile.kind, "bill")));
+        for (const [i, attachment] of params.attachments.entries()) {
+          await tx.insert(requestFile).values({
+            id: attachment.fileId,
+            requestId: locked.id,
+            kind: "bill",
+            storageKey: attachment.storageKey,
+            pageNo: existingCount + i + 1,
+            mime: attachment.mime,
+            bytes: attachment.byteLength,
+            sha256: attachment.sha256,
+            uploadedBy: actorId,
+          });
+        }
+        return {
+          objectType: "request",
+          objectId: locked.id,
+          after: {
+            invoiceNo: params.invoiceNo.trim(),
+            invoiceDate: params.invoiceDate,
+            amountMinor: params.amountMinor,
+            quotedAmountMinor: locked.amountMinor,
+            fileCount: params.attachments.length,
+          },
+        };
+      },
+    );
+  } catch (err) {
+    if (err instanceof LedgerRejection) return { ok: false, error: err.message };
+    throw err;
+  }
+}
 
 export async function approveRequest(
   actorId: string,
@@ -430,49 +535,100 @@ export async function payRequest(
   // boundary, so a caught violation here is the expected, only path to a
   // graceful error, not a fallback for a check that already ran.
   try {
-    return await runTransition(actorId, "pay", requestId, meta, null, {}, async (tx) => {
-      const [row] = await tx
-        .insert(payment)
-        .values({
-          requestId,
-          fromAccount: params.fromAccount,
-          mode: params.mode,
-          valueDate: params.valueDate,
-          amountMinor: params.amountMinor,
-          tdsMinor: params.tdsMinor,
-          reference: params.reference,
-          paidBy: actorId,
-        })
-        .returning({ id: payment.id });
+    // Filled by the patch callback below, read by buildAfter: the ledger
+    // arithmetic is done once, under the row lock runTransition takes, and
+    // both callbacks see the same numbers.
+    let outcome: { settledBefore: number; settledAfter: number; balance: number; eventType: string } | null = null;
 
-      if (params.advice) {
-        await tx.insert(requestFile).values({
-          id: params.advice.fileId,
-          requestId,
-          kind: "payment_advice",
-          storageKey: params.advice.storageKey,
-          mime: params.advice.mime,
-          bytes: params.advice.byteLength,
-          sha256: params.advice.sha256,
-          uploadedBy: actorId,
-        });
-      }
+    return await runTransition(
+      actorId,
+      "pay",
+      requestId,
+      meta,
+      null,
+      async (tx, req) => {
+        const settledBefore = await sumSettledMinor(tx, req.id);
+        const settledAfter = settledBefore + params.amountMinor;
 
-      return {
-        objectType: "payment",
-        objectId: row.id,
-        after: {
-          mode: params.mode,
-          valueDate: params.valueDate,
-          amountMinor: params.amountMinor,
-          tdsMinor: params.tdsMinor,
-          reference: params.reference,
-          fromAccountLabel: params.fromAccount.label,
-          hasAdvice: Boolean(params.advice),
-        },
-      };
-    });
+        // The ceiling that replaced "exactly one payment per request".
+        if (settledAfter > req.amountMinor) {
+          throw new LedgerRejection(
+            `That would take payments to ${formatMinorUnits(settledAfter, req.currency)}, above the ${formatMinorUnits(req.amountMinor, req.currency)} this request can settle. The balance is ${formatMinorUnits(req.amountMinor - settledBefore, req.currency)}.`,
+          );
+        }
+
+        // An advance approved for a stated amount can't quietly become a
+        // larger one before the tax invoice is in (concept-v2.html section
+        // 09: "the exposure cap for this request").
+        const invoiceIsIn = req.kind !== "advance" || req.invoiceAttachedAt !== null;
+        if (!invoiceIsIn && req.payNowMinor !== null && settledAfter > req.payNowMinor) {
+          throw new LedgerRejection(
+            `This advance was asked for at ${formatMinorUnits(req.payNowMinor, req.currency)}. Paying more than that needs the tax invoice attached first.`,
+          );
+        }
+
+        const balance = req.amountMinor - settledAfter;
+        const stage: Stage = !invoiceIsIn ? "awaiting_invoice" : balance === 0 ? "paid" : "to_pay";
+        outcome = {
+          settledBefore,
+          settledAfter,
+          balance,
+          eventType: stage === "paid" ? "request.paid" : stage === "awaiting_invoice" ? "request.advance_paid" : "request.part_paid",
+        };
+        return { stage };
+      },
+      async (tx) => {
+        const [row] = await tx
+          .insert(payment)
+          .values({
+            requestId,
+            fromAccount: params.fromAccount,
+            mode: params.mode,
+            valueDate: params.valueDate,
+            amountMinor: params.amountMinor,
+            tdsMinor: params.tdsMinor,
+            reference: params.reference,
+            paidBy: actorId,
+          })
+          .returning({ id: payment.id });
+
+        if (params.advice) {
+          await tx.insert(requestFile).values({
+            id: params.advice.fileId,
+            requestId,
+            kind: "payment_advice",
+            storageKey: params.advice.storageKey,
+            mime: params.advice.mime,
+            bytes: params.advice.byteLength,
+            sha256: params.advice.sha256,
+            uploadedBy: actorId,
+          });
+        }
+
+        // runTransition awaits the patch callback before this one, so the
+        // ledger numbers are always set by now.
+        const settled = outcome!;
+        return {
+          objectType: "payment",
+          objectId: row.id,
+          eventType: settled.eventType,
+          after: {
+            mode: params.mode,
+            valueDate: params.valueDate,
+            amountMinor: params.amountMinor,
+            tdsMinor: params.tdsMinor,
+            reference: params.reference,
+            fromAccountLabel: params.fromAccount.label,
+            hasAdvice: Boolean(params.advice),
+            settledBeforeMinor: settled.settledBefore,
+            settledAfterMinor: settled.settledAfter,
+            balanceMinor: settled.balance,
+          },
+        };
+      },
+    );
   } catch (err) {
+    if (err instanceof LedgerRejection) return { ok: false, error: err.message };
     const constraint = uniqueViolationConstraint(err);
     if (constraint === "payment_reference_unique_idx") {
       return { ok: false, error: "This payment reference has already been used on another payment." };
@@ -482,6 +638,23 @@ export async function payRequest(
     }
     throw err;
   }
+}
+
+// Thrown from inside a transition's patch callback to abandon it with a
+// message the desk can act on; the surrounding transaction rolls back, so
+// nothing has been written by then. Never escapes this module.
+class LedgerRejection extends Error {}
+
+// Money already applied to a request, in minor units. Gross amounts (the
+// payment's own amount_minor); TDS is a deduction inside that figure, not
+// an addition to it. Called under the request-row lock, so the sum and the
+// INSERT that follows can't be interleaved with another payment.
+async function sumSettledMinor(tx: ScopedTx, requestId: string): Promise<number> {
+  const [row] = await tx
+    .select({ total: sql<string>`coalesce(sum(${payment.amountMinor}), 0)::text` })
+    .from(payment)
+    .where(eq(payment.requestId, requestId));
+  return Number(row?.total ?? 0);
 }
 
 // Postgres error code for a unique-constraint violation, plus which

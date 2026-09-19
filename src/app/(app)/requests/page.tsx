@@ -21,6 +21,7 @@ const STAGE_LABEL: Record<string, string> = {
   on_hold: "on hold",
   rejected: "rejected",
   withdrawn: "withdrawn",
+  awaiting_invoice: "invoice awaited",
 };
 
 const STAGE_PILL_CLASS: Record<string, string> = {
@@ -32,6 +33,7 @@ const STAGE_PILL_CLASS: Record<string, string> = {
   on_hold: "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200",
   rejected: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200",
   withdrawn: "bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400",
+  awaiting_invoice: "bg-violet-100 text-violet-800 dark:bg-violet-900 dark:text-violet-200",
 };
 
 function StagePill({ stage }: { stage: string }) {
