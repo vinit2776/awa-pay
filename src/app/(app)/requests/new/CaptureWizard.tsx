@@ -3,7 +3,9 @@
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { submitRequestAction } from "./actions";
+import { attachInvoiceAction } from "@/app/(app)/requests/[id]/actions";
 import { enqueueDraft } from "@/capture/draftQueue";
+import type { DuplicateMatch } from "@/duplicates/duplicateCore";
 import { formatMinorUnits } from "@/lib/money";
 import { StepDetails } from "./StepDetails";
 import { StepKind } from "./StepKind";
@@ -15,7 +17,12 @@ import { FINAL_BILL_OPTIONS, TOTAL_STEPS, type WizardForm } from "./wizardTypes"
 import { amountToMinor, cleanAmount, isoDateInDays, minorToPlain } from "./wizardMoney";
 import { CheckIcon, StepHeader, primaryButtonClass, secondaryButtonClass } from "./wizardUi";
 
-type Outcome = { type: "sent"; ref: string; requestId: string; kind: "invoice" | "advance"; vendor: string } | { type: "queued" };
+type Outcome =
+  | { type: "sent"; ref: string; requestId: string; kind: "invoice" | "advance"; vendor: string }
+  // The bill was the tax invoice for an advance already paid: attached to
+  // that request, nothing new raised.
+  | { type: "attached"; ref: string; requestId: string }
+  | { type: "queued" };
 
 type WizardProps = {
   departments: { id: string; name: string }[];
@@ -62,12 +69,17 @@ function WizardRun({
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [outcome, setOutcome] = useState<Outcome | null>(null);
+  // Open advances the vendor on this bill already has (the sixth duplicate
+  // verdict). Set by a refused submit; belongs to the vendor as typed, so a
+  // change to vendor or GSTIN clears it.
+  const [openAdvances, setOpenAdvances] = useState<DuplicateMatch[]>([]);
   const containerRef = useRef<HTMLDivElement>(null);
   const firstRender = useRef(true);
 
   function patch(partial: Partial<WizardForm>) {
     setForm((f) => ({ ...f, ...partial }));
     setError(null);
+    if ("vendor" in partial || "gstin" in partial) setOpenAdvances([]);
   }
 
   const capture = useBillCapture({
@@ -165,7 +177,7 @@ function WizardRun({
     };
   }
 
-  async function handleSubmit(overrideDuplicateReason?: string) {
+  async function handleSubmit(overrideDuplicateReason?: string, declineOpenAdvanceReason?: string) {
     setSubmitting(true);
     setError(null);
     try {
@@ -193,10 +205,16 @@ function WizardRun({
         })),
         linkedRequestId,
         overrideDuplicateReason,
+        declineOpenAdvanceReason,
         extraction: capture.extractionAttemptId
           ? { attemptId: capture.extractionAttemptId, phash: capture.extractionPhash }
           : undefined,
       });
+      if (result && !result.ok && result.duplicate?.verdict === "matched_advance") {
+        // A question, not an error: the card in the review step asks it.
+        setOpenAdvances(result.openAdvances ?? [result.duplicate.match]);
+        return;
+      }
       if (!result || !result.ok) {
         setError(result?.error ?? "Something went wrong. Try again.");
         capture.applyDuplicate(result?.duplicate?.match ?? null, result?.duplicate?.verdict ?? null);
@@ -210,11 +228,51 @@ function WizardRun({
     }
   }
 
+  // "Yes, this is the invoice for that advance": the bill goes onto the
+  // advance the requester raised, through the same attach the request's own
+  // page offers. No second request is created.
+  async function handleAttach(match: DuplicateMatch) {
+    if (!match.advance) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const fields = buildFields();
+      const result = await attachInvoiceAction(match.requestId, {
+        invoiceNo: fields.invoiceNo,
+        invoiceDate: fields.invoiceDate,
+        amountMinor: amountToMinor(fields.amount) ?? 0,
+        attachments: capture.attachments.map((a) => ({
+          fileId: a.fileId,
+          storageKey: a.storageKey,
+          mime: a.mime,
+          byteLength: a.byteLength,
+          sha256: a.sha256,
+        })),
+      });
+      if (!result.ok) {
+        setError(result.error);
+        return;
+      }
+      setOutcome({ type: "attached", ref: match.advance.ref, requestId: match.requestId });
+    } catch {
+      setError("Something went wrong. Try again.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   if (outcome) {
     return (
       <div className="flex w-full max-w-sm flex-col items-center gap-5 text-center">
         <CheckIcon />
-        {outcome.type === "sent" ? (
+        {outcome.type === "attached" ? (
+          <>
+            <h2 className="text-2xl font-semibold">Attached to {outcome.ref}</h2>
+            <p className="text-base text-zinc-600 dark:text-zinc-400">
+              That bill is the invoice for the advance already paid. It is with the payer for the balance. Nothing new was raised, so it cannot be paid twice.
+            </p>
+          </>
+        ) : outcome.type === "sent" ? (
           <>
             <h2 className="text-2xl font-semibold">Sent to your approver</h2>
             <p className="text-lg font-semibold">{outcome.ref}</p>
@@ -233,7 +291,7 @@ function WizardRun({
           </>
         )}
         <div className="flex w-full flex-col gap-3">
-          {outcome.type === "sent" && (
+          {(outcome.type === "sent" || outcome.type === "attached") && (
             <Link href={`/requests/${outcome.requestId}`} className={`${primaryButtonClass} flex items-center justify-center`}>
               See this request
             </Link>
@@ -281,6 +339,9 @@ function WizardRun({
           canOverrideDuplicate={canOverrideDuplicate}
           submitting={submitting}
           onOverride={(reason) => void handleSubmit(reason)}
+          openAdvances={openAdvances}
+          onAttachToAdvance={(match) => void handleAttach(match)}
+          onDeclineOpenAdvance={(reason) => void handleSubmit(undefined, reason)}
           error={error}
         />
       )}

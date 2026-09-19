@@ -69,8 +69,16 @@ export function renderEventSummary(event: RenderableEvent): EventSummary {
       return { icon: "✓", label: "Hold released", detail: "back with the approver" };
     case "request.rejected":
       return { icon: "✕", label: "Rejected", detail: str("reason") };
-    case "request.accounted":
-      return { icon: "✓", label: "Accounted", detail: `voucher ${str("voucherNo")} · booked ${str("bookedOn")}` };
+    case "request.accounted": {
+      // Declining the offer to attach this bill to an open advance is part of
+      // what accounting decided, so it reads on the same line of the trail.
+      const declined = str("openAdvanceDeclineReason");
+      return {
+        icon: "✓",
+        label: "Accounted",
+        detail: `voucher ${str("voucherNo")} · booked ${str("bookedOn")}${declined ? ` · not the invoice for an open advance: ${declined}` : ""}`,
+      };
+    }
     case "request.returned_to_approver":
       return { icon: "!", label: "Returned to approver", detail: str("reason") };
     case "request.paid": {
@@ -95,7 +103,15 @@ export function renderEventSummary(event: RenderableEvent): EventSummary {
       return {
         icon: "✓",
         label: "Invoice attached",
-        detail: `${str("invoiceNo")} · ${amountMinor !== null ? formatMinorUnits(amountMinor) : ""}`,
+        detail: `${str("invoiceNo")} · ${amountMinor !== null ? formatMinorUnits(amountMinor) : ""}${str("viaRef") ? ` · from ${str("viaRef")}` : ""}`,
+      };
+    }
+    case "request.attached_to_advance": {
+      const amountMinor = num("amountMinor");
+      return {
+        icon: "✓",
+        label: `Attached to ${str("advanceRef")}`,
+        detail: `${str("invoiceNo")} · ${amountMinor !== null ? formatMinorUnits(amountMinor) : ""} · settled on the advance, not paid again here`,
       };
     }
     case "request.returned_to_accounts":

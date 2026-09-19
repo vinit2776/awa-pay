@@ -1,7 +1,8 @@
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { type Role, type ScopedTx, withGrantScope } from "@/db/runtime";
 import {
   accounting,
+  duplicateCheck,
   holdSubReasonEnum,
   payment,
   paymentModeEnum,
@@ -11,7 +12,15 @@ import {
   requestStageEnum,
   vendor,
 } from "@/db/schema";
-import { actorHoldsRole, checkDuplicates, recordDuplicateCheck, type DuplicateMatch, type DuplicateVerdict } from "@/duplicates/duplicateCore";
+import {
+  actorHoldsRole,
+  checkDuplicates,
+  checkOpenAdvances,
+  recordAdvanceMatches,
+  recordDuplicateCheck,
+  type DuplicateMatch,
+  type DuplicateVerdict,
+} from "@/duplicates/duplicateCore";
 import { appendEvent } from "@/events/append";
 import { formatMinorUnits } from "@/lib/money";
 import { headObjectContentLength } from "@/storage/r2";
@@ -52,7 +61,8 @@ export type TransitionName =
   | "returnToAccounts"
   | "resubmit"
   | "withdraw"
-  | "attachInvoice";
+  | "attachInvoice"
+  | "attachToAdvance";
 
 const TRANSITIONS: Record<
   TransitionName,
@@ -76,11 +86,30 @@ const TRANSITIONS: Record<
   // payer's queue. fromStages stays inside request_update's requester
   // branch (0024) — see the load-bearing note in runTransition.
   attachInvoice: { requiredRole: "requester", fromStages: ["awaiting_invoice"], toStage: "to_pay", eventType: "request.invoice_attached" },
+  // The accounts desk folds a new bill into the open advance it is the tax
+  // invoice for (docs/concept-v2.html section 09, the sixth duplicate
+  // verdict). This transition acts on the NEW request and closes it; the
+  // advance is written in the same transaction (see attachToOpenAdvance).
+  // Closed as "withdrawn" rather than "rejected" on purpose: rejected
+  // requests stay in the duplicate index forever and count in the rejection
+  // reports, and this one was not declined — its bill now lives on the
+  // advance. Withdrawn is already excluded from duplicate matching
+  // (app_duplicate_check_candidates, 0018), so the bill can't match itself.
+  // The event type and close_reason are what tell the two kinds of
+  // withdrawal apart.
+  attachToAdvance: { requiredRole: "accountant", fromStages: ["with_accounts"], toStage: "withdrawn", eventType: "request.attached_to_advance" },
 };
 
 export type TransitionResult =
   | { ok: true }
-  | { ok: false; error: string; duplicate?: { match: DuplicateMatch; verdict: DuplicateVerdict } };
+  | {
+      ok: false;
+      error: string;
+      duplicate?: { match: DuplicateMatch; verdict: DuplicateVerdict };
+      // Set with a matched_advance verdict: every open advance the bill was
+      // offered against (duplicate.match is the first of them).
+      openAdvances?: DuplicateMatch[];
+    };
 
 type Meta = { ip: string; userAgent: string | undefined };
 
@@ -224,23 +253,13 @@ export async function attachInvoice(
       requestId,
       meta,
       null,
-      async (tx, locked) => {
-        const settled = await sumSettledMinor(tx, locked.id);
-        if (params.amountMinor < settled) {
-          throw new LedgerRejection(
-            `The invoice is ${formatMinorUnits(params.amountMinor, locked.currency)}, less than the ${formatMinorUnits(settled, locked.currency)} already paid as an advance. Tell accounts — the vendor may owe a refund.`,
-          );
-        }
-        return {
-          invoiceNo: params.invoiceNo.trim(),
-          invoiceDate: params.invoiceDate,
-          amountMinor: params.amountMinor,
-          invoiceAttachedAt: new Date(),
-          // The advance can't have been asked for at more than the invoice
-          // it turned out to be (request_pay_now_within_total_check).
-          payNowMinor: Math.min(locked.payNowMinor ?? params.amountMinor, params.amountMinor),
-        };
-      },
+      (tx, locked) =>
+        invoiceOntoAdvance(
+          tx,
+          locked,
+          { invoiceNo: params.invoiceNo.trim(), invoiceDate: params.invoiceDate, amountMinor: params.amountMinor },
+          "Tell accounts — the vendor may owe a refund.",
+        ),
       async (tx, locked) => {
         const existingCount = await tx.$count(requestFile, and(eq(requestFile.requestId, locked.id), eq(requestFile.kind, "bill")));
         for (const [i, attachment] of params.attachments.entries()) {
@@ -273,6 +292,37 @@ export async function attachInvoice(
     if (err instanceof LedgerRejection) return { ok: false, error: err.message };
     throw err;
   }
+}
+
+// What a request row becomes when its tax invoice is attached: the invoice's
+// own number, date and total replace the quotation's, and the advance is
+// marked as no longer owing one. Shared by the requester's own attach
+// (attachInvoice) and the accounts desk's attach-to-advance, so both write
+// the identical fields the duplicate index reads. Called under the advance's
+// row lock. A total below what the advance already paid means the vendor
+// owes money back — refused here rather than papered over, since a refund is
+// a real outcome that needs a person (concept-v2.html section 09).
+async function invoiceOntoAdvance(
+  tx: ScopedTx,
+  advance: RequestRow,
+  invoice: { invoiceNo: string; invoiceDate: string; amountMinor: number },
+  shortfallAdvice: string,
+): Promise<Partial<typeof request.$inferInsert>> {
+  const settled = await sumSettledMinor(tx, advance.id);
+  if (invoice.amountMinor < settled) {
+    throw new LedgerRejection(
+      `The invoice is ${formatMinorUnits(invoice.amountMinor, advance.currency)}, less than the ${formatMinorUnits(settled, advance.currency)} already paid as an advance. ${shortfallAdvice}`,
+    );
+  }
+  return {
+    invoiceNo: invoice.invoiceNo,
+    invoiceDate: invoice.invoiceDate,
+    amountMinor: invoice.amountMinor,
+    invoiceAttachedAt: new Date(),
+    // The advance can't have been asked for at more than the invoice it
+    // turned out to be (request_pay_now_within_total_check).
+    payNowMinor: Math.min(advance.payNowMinor ?? invoice.amountMinor, invoice.amountMinor),
+  };
 }
 
 export async function approveRequest(
@@ -373,6 +423,12 @@ export async function accountRequest(
     voucherNo: string;
     bookedOn: string;
     overrideDuplicate?: { reason: string };
+    // Set to decline the offer to attach this bill to the vendor's open
+    // advance (concept-v2.html section 09) and book it as its own request.
+    // Required, with a reason, whenever the vendor has one: the danger is
+    // paying the advance and then the full invoice, so "no" is allowed but
+    // never silent.
+    declineOpenAdvance?: { reason: string };
   },
   meta: Meta,
 ): Promise<TransitionResult> {
@@ -388,7 +444,7 @@ export async function accountRequest(
   // accepts is not the real enforcement boundary; request's own
   // one_payment_per_invoice partial unique index is.
   const [current] = await withGrantScope(actorId, "accountant", (tx) =>
-    tx.select({ invoiceKey: request.invoiceKey, fy: request.fy }).from(request).where(eq(request.id, requestId)).limit(1),
+    tx.select({ invoiceKey: request.invoiceKey, fy: request.fy, kind: request.kind }).from(request).where(eq(request.id, requestId)).limit(1),
   );
   const [matchedVendorForCheck] = await withGrantScope(actorId, "accountant", (tx) =>
     tx.select({ vendorKey: vendor.vendorKey }).from(vendor).where(eq(vendor.id, params.vendorId)).limit(1),
@@ -413,6 +469,28 @@ export async function accountRequest(
       return { ok: false, error: "Only a super admin can override an already-paid vendor+invoice match.", duplicate: { match: duplicateResult.match, verdict: duplicateResult.verdict } };
     }
     override = { by: actorId, reason: params.overrideDuplicate.reason };
+  }
+
+  // The sixth verdict. Same moment, same reason as above: vendor_key is only
+  // known from here. Only a bill can be the invoice an advance is waiting
+  // for; a second advance to the same vendor is a different thing. Keyed on
+  // the vendor row's exact key, so it is not a name guess like capture's.
+  const openAdvances =
+    current?.kind === "invoice" && matchedVendorForCheck?.vendorKey
+      ? await checkOpenAdvances(actorId, "accountant", { excludeRequestId: requestId, vendorKey: matchedVendorForCheck.vendorKey })
+      : [];
+  let advanceDecline: { by: string; reason: string } | null = null;
+  if (openAdvances.length > 0) {
+    const reason = params.declineOpenAdvance?.reason.trim();
+    if (!reason) {
+      return {
+        ok: false,
+        error: "This vendor has an advance paid and its tax invoice still awaited. Attach this bill to it, or say why it is a different bill.",
+        duplicate: { match: openAdvances[0], verdict: "matched_advance" },
+        openAdvances,
+      };
+    }
+    advanceDecline = { by: actorId, reason };
   }
 
   return runTransition(
@@ -448,14 +526,225 @@ export async function accountRequest(
       if (duplicateResult.match) {
         await recordDuplicateCheck(tx, requestId, duplicateResult.match, duplicateResult.verdict, override);
       }
+      // Same transaction as the accounting row and the event below, so a
+      // bill can never be booked as its own request with the decline of the
+      // advance it might have belonged to missing from the trail.
+      await recordAdvanceMatches(tx, requestId, openAdvances, advanceDecline);
 
       return {
         objectType: "accounting",
         objectId: row.id,
-        after: { companyId: params.companyId, vendorId: params.vendorId, headId: params.headId, voucherNo: params.voucherNo, bookedOn: params.bookedOn },
+        after: {
+          companyId: params.companyId,
+          vendorId: params.vendorId,
+          headId: params.headId,
+          voucherNo: params.voucherNo,
+          bookedOn: params.bookedOn,
+          ...(advanceDecline
+            ? {
+                openAdvanceDeclined: openAdvances.map((m) => ({ requestId: m.requestId, ref: m.advance?.ref ?? null })),
+                openAdvanceDeclineReason: advanceDecline.reason,
+              }
+            : {}),
+        },
       };
     },
   );
+}
+
+// The accounts desk's answer to a matched_advance verdict: this bill IS the
+// tax invoice the vendor's open advance was waiting for. It does not create
+// a second payable request. The bill's number, date, total and files move
+// onto the advance, which goes to the payer for the balance exactly as if
+// the requester had attached it, and the new request closes, linked to the
+// advance. All of it in one transaction with both events.
+//
+// The vendor the accountant picked must be the vendor the advance was paid
+// to (compared on vendor_key, the same identity the duplicate index uses),
+// otherwise this would be a way to hang any invoice on any advance. The
+// invoice number is then checked against the same index a normal request
+// uses, so an invoice already paid elsewhere can't be attached; and the
+// index itself still stands behind that check when the advance is finally
+// paid (concept-v2.html section 09: "the invoice can only be consumed once").
+export async function attachToOpenAdvance(
+  actorId: string,
+  requestId: string,
+  params: { advanceRequestId: string; vendorId: string; invoiceNo?: string; invoiceDate?: string },
+  meta: Meta,
+): Promise<TransitionResult> {
+  const [bill] = await withGrantScope(actorId, "accountant", (tx) => tx.select().from(request).where(eq(request.id, requestId)).limit(1));
+  if (!bill) return { ok: false, error: "Request not found." };
+  if (bill.kind !== "invoice") return { ok: false, error: "Only a bill can be attached to an advance." };
+
+  const invoiceNo = (params.invoiceNo ?? bill.invoiceNo ?? "").trim();
+  const invoiceDate = params.invoiceDate || bill.invoiceDate;
+  if (!invoiceNo) return { ok: false, error: "Enter the invoice number — it is what stops this bill being paid twice." };
+  if (!invoiceDate) return { ok: false, error: "Enter the invoice date." };
+
+  const [chosenVendor] = await withGrantScope(actorId, "accountant", (tx) =>
+    tx.select({ vendorKey: vendor.vendorKey }).from(vendor).where(eq(vendor.id, params.vendorId)).limit(1),
+  );
+  if (!chosenVendor) return { ok: false, error: "A vendor is required." };
+
+  // RLS-filtered: an advance in a department this accountant can't see is
+  // simply absent, which is the right answer — they can't attach to it, only
+  // decline the offer and ask the person named in the redacted match.
+  const [advance] = await withGrantScope(actorId, "accountant", (tx) =>
+    tx.select().from(request).where(eq(request.id, params.advanceRequestId)).limit(1),
+  );
+  if (!advance) return { ok: false, error: "You can't attach to that advance — it isn't in a department you can see." };
+  if (advance.kind !== "advance" || advance.stage !== "awaiting_invoice" || advance.invoiceAttachedAt !== null) {
+    return { ok: false, error: `${advance.ref} is not waiting for a tax invoice.` };
+  }
+  if (advance.vendorKey !== chosenVendor.vendorKey) {
+    return { ok: false, error: `${advance.ref} was paid to a different vendor than the one selected.` };
+  }
+
+  const [fyRow] = await withGrantScope(actorId, "accountant", (tx) =>
+    tx.execute<{ fy: string | null }>(sql`select financial_year(${invoiceDate}::date) as fy`),
+  );
+  const identity = await checkDuplicates(actorId, "accountant", {
+    excludeRequestId: advance.id,
+    vendorKey: advance.vendorKey,
+    invoiceKey: invoiceNo.toUpperCase(),
+    fy: fyRow?.fy ?? null,
+  });
+  if (identity.verdict === "blocked_paid" && identity.match) {
+    return {
+      ok: false,
+      error: "This vendor and invoice number were already paid on another request.",
+      duplicate: { match: identity.match, verdict: identity.verdict },
+    };
+  }
+
+  try {
+    return await runTransition(
+      actorId,
+      "attachToAdvance",
+      requestId,
+      meta,
+      null,
+      // linked_request may already be a reconsideration link; that one
+      // drives a banner and routing and is worth more than this pointer,
+      // which the event and the duplicate_check row both record anyway.
+      (_tx, locked) => ({
+        closeReason: `Invoice attached to ${advance.ref} — settled there, not paid again on this request.`,
+        linkedRequest: locked.linkedRequest ?? advance.id,
+      }),
+      async (tx, locked) => {
+        // The advance's own row lock: two desks attaching to the same
+        // advance at once, or the requester attaching theirs, serialise
+        // here and the second finds it already consumed. Always taken after
+        // the new request's lock (runTransition took that one), never the
+        // other way round, so there is no lock-order cycle.
+        const [adv] = await tx.select().from(request).where(eq(request.id, advance.id)).for("update");
+        if (!adv || adv.kind !== "advance" || adv.stage !== "awaiting_invoice" || adv.invoiceAttachedAt !== null) {
+          throw new LedgerRejection(`${advance.ref} is no longer waiting for a tax invoice.`);
+        }
+        // A query freezes a request where it stands (runTransition enforces
+        // that for the request it acts on; the advance is acted on too).
+        const [advanceQuery] = await tx
+          .select({ id: query.id })
+          .from(query)
+          .where(and(eq(query.requestId, adv.id), isNull(query.resolvedAt)))
+          .limit(1);
+        if (advanceQuery) throw new LedgerRejection(`${adv.ref} has an open query — answer it before attaching an invoice to it.`);
+
+        const invoicePatch = await invoiceOntoAdvance(
+          tx,
+          adv,
+          { invoiceNo, invoiceDate, amountMinor: locked.amountMinor },
+          "The vendor may owe a refund — that needs a decision, not an attach.",
+        );
+        await tx
+          .update(request)
+          .set({ stage: "to_pay", ...invoicePatch, updatedAt: new Date() })
+          .where(eq(request.id, adv.id));
+
+        const files = await tx
+          .select()
+          .from(requestFile)
+          .where(and(eq(requestFile.requestId, locked.id), eq(requestFile.kind, "bill")))
+          .orderBy(asc(requestFile.pageNo));
+        const existingCount = await tx.$count(requestFile, and(eq(requestFile.requestId, adv.id), eq(requestFile.kind, "bill")));
+        for (const [i, file] of files.entries()) {
+          // The same stored object under a second row: files are immutable
+          // and never deleted, and the copy is what puts these bytes'
+          // checksum on the request that will actually be paid.
+          await tx.insert(requestFile).values({
+            requestId: adv.id,
+            kind: "bill",
+            storageKey: file.storageKey,
+            pageNo: existingCount + i + 1,
+            mime: file.mime,
+            bytes: file.bytes,
+            sha256: file.sha256,
+            phash: file.phash,
+            thumbnailKey: file.thumbnailKey,
+            uploadedBy: actorId,
+          });
+        }
+
+        await appendEvent(
+          tx,
+          {
+            requestId: adv.id,
+            actor: actorId,
+            roleAtTime: "accountant",
+            type: "request.invoice_attached",
+            objectType: "request",
+            objectId: adv.id,
+            before: { stage: adv.stage },
+            after: {
+              invoiceNo,
+              invoiceDate,
+              amountMinor: locked.amountMinor,
+              quotedAmountMinor: adv.amountMinor,
+              fileCount: files.length,
+              viaRequestId: locked.id,
+              viaRef: locked.ref,
+              selfActioned: actorId === adv.raisedBy,
+            },
+            reason: null,
+          },
+          meta,
+        );
+
+        // The matched_advance row for the new request, resolved as an
+        // attach: no overridden_by, because nothing was declined.
+        await tx.insert(duplicateCheck).values({
+          requestId: locked.id,
+          matchedRequestId: adv.id,
+          signals: ["open_advance", "attached"],
+          score: 1,
+          verdict: "matched_advance",
+        });
+
+        return {
+          objectType: "request",
+          objectId: locked.id,
+          after: {
+            advanceRequestId: adv.id,
+            advanceRef: adv.ref,
+            invoiceNo,
+            invoiceDate,
+            amountMinor: locked.amountMinor,
+            fileCount: files.length,
+          },
+        };
+      },
+    );
+  } catch (err) {
+    if (err instanceof LedgerRejection) return { ok: false, error: err.message };
+    // The advance's own UPDATE is checked against the accountant's company
+    // scope (request_update WITH CHECK): an accountant scoped to a different
+    // company than the one the advance was booked to can see it but not
+    // change it.
+    if (pgErrorCode(err) === "42501") {
+      return { ok: false, error: `You can see ${advance.ref} but aren't scoped to the company it was booked to, so you can't attach to it.` };
+    }
+    throw err;
+  }
 }
 
 export async function returnToApprover(
@@ -655,6 +944,16 @@ async function sumSettledMinor(tx: ScopedTx, requestId: string): Promise<number>
     .from(payment)
     .where(eq(payment.requestId, requestId));
   return Number(row?.total ?? 0);
+}
+
+// SQLSTATE of a failed statement, wherever the driver put it (see
+// uniqueViolationConstraint below for why both places are checked).
+function pgErrorCode(err: unknown): string | null {
+  const direct = err && typeof err === "object" ? (err as { code?: unknown }) : null;
+  if (typeof direct?.code === "string") return direct.code;
+  const cause = err && typeof err === "object" && "cause" in err ? (err as { cause?: unknown }).cause : null;
+  const causeRecord = cause && typeof cause === "object" ? (cause as { code?: unknown }) : null;
+  return typeof causeRecord?.code === "string" ? causeRecord.code : null;
 }
 
 // Postgres error code for a unique-constraint violation, plus which

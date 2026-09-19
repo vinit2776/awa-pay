@@ -41,6 +41,10 @@ async function uploadDraft(draft: QueuedDraft): Promise<boolean> {
       quotationNo: draft.quotationNo,
       invoiceExpectedBy: draft.invoiceExpectedBy,
       attachments,
+      // Nobody is at the screen to answer "is this the invoice for that open
+      // advance?". Record the match on the new request and let the accounts
+      // desk ask, rather than leave a queued draft stuck behind a question.
+      askAboutOpenAdvance: false,
     });
     return Boolean(result?.ok);
   } catch {

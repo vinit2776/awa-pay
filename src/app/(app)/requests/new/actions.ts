@@ -44,7 +44,7 @@ export async function checkDuplicateWarningAction(
 
 export type SubmitFormState =
   | { ok: true; ref: string; requestId: string }
-  | { ok: false; error: string; duplicate?: { match: DuplicateMatch; verdict: DuplicateVerdict } }
+  | { ok: false; error: string; duplicate?: { match: DuplicateMatch; verdict: DuplicateVerdict }; openAdvances?: DuplicateMatch[] }
   | undefined;
 
 export async function submitRequestAction(input: {
@@ -64,6 +64,12 @@ export async function submitRequestAction(input: {
   attachments: Attachment[];
   linkedRequestId?: string | null;
   overrideDuplicateReason?: string;
+  // Answers the "is this the invoice for that advance?" question with a
+  // reason, when the answer is no (see captureCore.ts).
+  declineOpenAdvanceReason?: string;
+  // false for a draft flushed from the offline queue: record the match, ask
+  // nobody. Omitted means ask.
+  askAboutOpenAdvance?: boolean;
   extraction?: { attemptId: string; phash: string | null };
 }): Promise<SubmitFormState> {
   const session = await verifySession();
@@ -100,11 +106,13 @@ export async function submitRequestAction(input: {
     attachments: input.attachments,
     linkedRequestId: input.linkedRequestId || undefined,
     overrideDuplicate: input.overrideDuplicateReason ? { reason: input.overrideDuplicateReason } : undefined,
+    declineOpenAdvance: input.declineOpenAdvanceReason ? { reason: input.declineOpenAdvanceReason } : undefined,
+    askAboutOpenAdvance: input.askAboutOpenAdvance,
     extraction: input.extraction,
   });
 
   if (!result.ok) {
-    return { ok: false, error: result.error, duplicate: result.duplicate };
+    return { ok: false, error: result.error, duplicate: result.duplicate, openAdvances: result.openAdvances };
   }
   return { ok: true, ref: result.ref, requestId: result.requestId };
 }

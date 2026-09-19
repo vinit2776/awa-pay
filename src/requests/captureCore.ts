@@ -1,7 +1,15 @@
 import { and, desc, eq, sql } from "drizzle-orm";
 import { type ScopedTx, withGrantScope } from "@/db/runtime";
 import { event, request, requestFile } from "@/db/schema";
-import { actorHoldsRole, checkDuplicates, recordDuplicateCheck, type DuplicateMatch, type DuplicateVerdict } from "@/duplicates/duplicateCore";
+import {
+  actorHoldsRole,
+  checkDuplicates,
+  checkOpenAdvances,
+  recordAdvanceMatches,
+  recordDuplicateCheck,
+  type DuplicateMatch,
+  type DuplicateVerdict,
+} from "@/duplicates/duplicateCore";
 import { computeEventHash } from "@/events/hash";
 import { attachExtractionToRequest } from "@/extraction/extractCore";
 import { headObjectContentLength } from "@/storage/r2";
@@ -63,11 +71,28 @@ export type SubmitRequestParams = {
   // application's own blocked_paid warning. Never touches the database's
   // own duplicate constraints, which still apply regardless.
   overrideDuplicate?: { reason: string };
+  // The sixth verdict (concept-v2.html section 09): a bill whose vendor has
+  // an advance paid and its tax invoice still awaited. Unless the caller
+  // says otherwise, submitting is refused until the requester either
+  // attaches the bill to that advance (a separate call — nothing here
+  // creates a second request for it) or answers this with a reason.
+  declineOpenAdvance?: { reason: string };
+  // false = record the match on the new request without asking. For a bill
+  // raised offline (src/capture/DraftFlusher.tsx): there is nobody at the
+  // screen to answer, and holding a queued draft forever on a question
+  // would be worse than asking later — the accounts desk asks again with
+  // the vendor matched exactly, and gates on it.
+  askAboutOpenAdvance?: boolean;
 };
 
 export type SubmitRequestResult =
   | { ok: true; ref: string; requestId: string }
-  | { ok: false; error: string; duplicate?: { match: DuplicateMatch; verdict: DuplicateVerdict } };
+  | {
+      ok: false;
+      error: string;
+      duplicate?: { match: DuplicateMatch; verdict: DuplicateVerdict };
+      openAdvances?: DuplicateMatch[];
+    };
 
 // Resolves who declined the original request, from its own hash-chained
 // trail — event.actor on its latest 'request.rejected' row already IS the
@@ -147,6 +172,27 @@ export async function submitRequest(params: SubmitRequestParams): Promise<Submit
     override = { by: params.userId, reason: params.overrideDuplicate.reason };
   }
 
+  // What the bill itself says is all there is to go on this early: the GSTIN
+  // printed on it and the vendor name confirmed on the confirm screen. No
+  // vendor is matched until the accounts desk, so this is the weaker,
+  // earlier half of the check — advisory, and only meaningful for a bill
+  // (a second advance to the same vendor is not the invoice that follows).
+  const openAdvances =
+    kind === "invoice" ? await checkOpenAdvances(params.userId, "requester", { gstin: params.gstinOnBill, vendorName: params.vendor }) : [];
+  let advanceDecline: { by: string; reason: string } | null = null;
+  if (openAdvances.length > 0 && (params.askAboutOpenAdvance ?? true)) {
+    const reason = params.declineOpenAdvance?.reason.trim();
+    if (!reason) {
+      return {
+        ok: false,
+        error: "This vendor has an advance that is still waiting for its tax invoice. Is this that invoice?",
+        duplicate: { match: openAdvances[0], verdict: "matched_advance" },
+        openAdvances,
+      };
+    }
+    advanceDecline = { by: params.userId, reason };
+  }
+
   const currency = params.currency ?? "INR";
 
   const newRequest = await withGrantScope(params.userId, "requester", async (tx) => {
@@ -208,6 +254,9 @@ export async function submitRequest(params: SubmitRequestParams): Promise<Submit
     if (duplicate) {
       await recordDuplicateCheck(tx, inserted.id, duplicate.match, duplicate.verdict, override);
     }
+    // Same transaction as the request row and its event, like every other
+    // duplicate_check write here.
+    await recordAdvanceMatches(tx, inserted.id, openAdvances, advanceDecline);
 
     const extractionSummary = params.extraction
       ? await attachExtractionToRequest(tx, params.extraction.attemptId, inserted.id, params.userId, {
@@ -244,7 +293,9 @@ export async function submitRequest(params: SubmitRequestParams): Promise<Submit
         fileCount: params.attachments.length,
         stage: "raised",
         linkedRequestId: params.linkedRequestId ?? null,
-        duplicateVerdict: duplicate?.verdict ?? null,
+        duplicateVerdict: duplicate?.verdict ?? (openAdvances.length > 0 ? "matched_advance" : null),
+        openAdvanceMatches: openAdvances.map((m) => ({ requestId: m.requestId, ref: m.advance?.ref ?? null })),
+        openAdvanceDeclineReason: advanceDecline?.reason ?? null,
         // Compact summary only — the full per-field value/confidence/
         // correction detail lives in the extraction table itself (see
         // attachExtractionToRequest), same split duplicateVerdict above

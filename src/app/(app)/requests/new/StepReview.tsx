@@ -17,6 +17,9 @@ export function StepReview({
   canOverrideDuplicate,
   submitting,
   onOverride,
+  openAdvances,
+  onAttachToAdvance,
+  onDeclineOpenAdvance,
   error,
 }: {
   form: WizardForm;
@@ -30,10 +33,16 @@ export function StepReview({
   canOverrideDuplicate?: boolean;
   submitting: boolean;
   onOverride: (reason: string) => void;
+  // The vendor on this bill has an advance paid and its tax invoice still
+  // awaited (concept-v2.html section 09). Empty means nothing to ask.
+  openAdvances: DuplicateMatch[];
+  onAttachToAdvance: (match: DuplicateMatch) => void;
+  onDeclineOpenAdvance: (reason: string) => void;
   error: string | null;
 }) {
   const [changingDepartment, setChangingDepartment] = useState(false);
   const [overrideReason, setOverrideReason] = useState("");
+  const [declineReason, setDeclineReason] = useState("");
   const vendor = form.vendor.trim();
   const total = formatMinorUnits(totalMinor);
   const now = formatMinorUnits(payNowMinor);
@@ -136,6 +145,58 @@ export function StepReview({
               </button>
             </div>
           )}
+        </div>
+      )}
+
+      {openAdvances.length > 0 && (
+        <div className="flex flex-col gap-3 rounded-lg border border-amber-400 bg-amber-50 p-3 text-base dark:border-amber-800 dark:bg-amber-950">
+          <p className="font-medium">Is this the final bill for an advance you already paid?</p>
+          {openAdvances.map((m) => (
+            <div key={m.requestId} className="flex flex-col gap-2">
+              {m.advance ? (
+                <>
+                  <p>
+                    <strong>{m.advance.ref}</strong> · {formatMinorUnits(m.advance.paidMinor, m.advance.currency)} already paid on a{" "}
+                    {formatMinorUnits(m.advance.quotedMinor, m.advance.currency)} job. Its bill has not been attached yet.
+                  </p>
+                  {m.advance.raisedByActor ? (
+                    <button
+                      type="button"
+                      disabled={submitting}
+                      onClick={() => onAttachToAdvance(m)}
+                      className="min-h-[54px] rounded-lg bg-black px-4 text-base font-medium text-white disabled:opacity-50 dark:bg-white dark:text-black"
+                    >
+                      Yes — attach it to {m.advance.ref}
+                    </button>
+                  ) : (
+                    <p className="text-sm text-zinc-600 dark:text-zinc-400">
+                      Someone else raised {m.advance.ref}, so only they can attach the bill to it. If this is that bill, ask them, and don&apos;t send it as a new request.
+                    </p>
+                  )}
+                </>
+              ) : (
+                <p>An advance for this vendor is waiting for its bill in a department you can&apos;t see{m.viewerHint && <> — {m.viewerHint}</>}.</p>
+              )}
+            </div>
+          ))}
+          <div className="flex flex-col gap-2 border-t border-amber-300 pt-3 dark:border-amber-800">
+            <textarea
+              value={declineReason}
+              onChange={(e) => setDeclineReason(e.target.value)}
+              placeholder="No — this is a different bill. Say why"
+              aria-label="Why this is a different bill"
+              rows={2}
+              className={inputClass}
+            />
+            <button
+              type="button"
+              disabled={submitting || !declineReason.trim()}
+              onClick={() => onDeclineOpenAdvance(declineReason)}
+              className="min-h-[54px] self-start rounded-lg border border-amber-600 px-4 text-base font-medium text-amber-900 disabled:opacity-50 dark:text-amber-200"
+            >
+              Send it as a new request
+            </button>
+          </div>
         </div>
       )}
 
