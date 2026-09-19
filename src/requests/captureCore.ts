@@ -31,6 +31,15 @@ export type SubmitRequestParams = {
   vendor?: string;
   gstinOnBill?: string;
   note?: string;
+  // Advances and part-payments (concept-v2.html section 09). kind defaults
+  // to "invoice". amountMinor is always the whole amount at stake: the bill
+  // total, or for an advance the quoted total. payNowMinor is what the
+  // requester wants paid now; omitted means the whole amount.
+  kind?: "invoice" | "advance";
+  payNowMinor?: number;
+  payNowReason?: string;
+  quotationNo?: string;
+  invoiceExpectedBy?: string;
   attachments: Attachment[];
   // Set whenever the capture screen ran extraction against the first
   // attachment before this call (phase 13) — present whether that attempt
@@ -84,6 +93,20 @@ export async function submitRequest(params: SubmitRequestParams): Promise<Submit
   if (params.attachments.length === 0) {
     return { ok: false, error: "Attach at least one file." };
   }
+
+  const kind = params.kind ?? "invoice";
+  if (kind === "advance") {
+    if (!params.payNowMinor || params.payNowMinor <= 0) {
+      return { ok: false, error: "Enter how much the vendor wants first." };
+    }
+  }
+  if (params.payNowMinor !== undefined && params.payNowMinor > params.amountMinor) {
+    return { ok: false, error: kind === "advance" ? "The advance can't be more than the full price." : "The part payment can't be more than the bill total." };
+  }
+  // A "part" that is the whole amount is just a full payment; store it as
+  // one so the payer's screen and the ledger never show a fake balance.
+  const payNowMinor =
+    kind === "advance" ? params.payNowMinor! : params.payNowMinor !== undefined && params.payNowMinor < params.amountMinor ? params.payNowMinor : null;
 
   // Server-side corroboration for "checksum on arrival" (see
   // src/storage/r2.ts's header comment for what this does and doesn't
@@ -147,11 +170,19 @@ export async function submitRequest(params: SubmitRequestParams): Promise<Submit
         raisedBy: params.userId,
         currency,
         amountMinor: params.amountMinor,
-        invoiceNo: params.invoiceNo,
-        invoiceDate: params.invoiceDate,
+        // An advance has no tax invoice yet. Its quotation number lives in
+        // its own column so it can never look like an invoice to the
+        // duplicate index (invoice_key is generated from invoice_no).
+        invoiceNo: kind === "advance" ? undefined : params.invoiceNo,
+        invoiceDate: kind === "advance" ? undefined : params.invoiceDate,
         vendor: params.vendor,
         gstinOnBill: params.gstinOnBill,
         note: params.note,
+        kind,
+        payNowMinor,
+        payNowReason: payNowMinor !== null ? params.payNowReason || null : null,
+        quotationNo: kind === "advance" ? params.quotationNo || null : null,
+        invoiceExpectedBy: kind === "advance" ? params.invoiceExpectedBy || null : null,
         linkedRequest: params.linkedRequestId,
         routedApproverId,
       })
@@ -200,6 +231,10 @@ export async function submitRequest(params: SubmitRequestParams): Promise<Submit
         ref: inserted.ref,
         departmentId: params.departmentId,
         amountMinor: params.amountMinor,
+        kind,
+        payNowMinor,
+        payNowReason: payNowMinor !== null ? params.payNowReason || null : null,
+        invoiceExpectedBy: kind === "advance" ? params.invoiceExpectedBy || null : null,
         currency,
         invoiceNo: params.invoiceNo ?? null,
         invoiceDate: params.invoiceDate ?? null,

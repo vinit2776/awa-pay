@@ -23,6 +23,8 @@ type RequestContext = {
   departmentId: string;
   companyId: string | null;
   raisedBy: string;
+  stage: string;
+  kind: string;
 };
 
 async function loadContext(tx: ScopedTx, requestId: string): Promise<RequestContext | null> {
@@ -35,6 +37,8 @@ async function loadContext(tx: ScopedTx, requestId: string): Promise<RequestCont
       departmentId: request.departmentId,
       companyId: request.companyId,
       raisedBy: request.raisedBy,
+      stage: request.stage,
+      kind: request.kind,
     })
     .from(request)
     .where(eq(request.id, requestId));
@@ -82,7 +86,7 @@ async function notifyRoles(
   actorRole: Role,
   requestId: string,
   targetRoles: Role[],
-  subject: string,
+  subject: string | ((ctx: RequestContext) => string),
   bodyFor: (ctx: RequestContext) => string,
 ): Promise<string[]> {
   const result = await withGrantScope(actorId, actorRole, async (tx) => {
@@ -92,7 +96,7 @@ async function notifyRoles(
     return { ctx, recipients };
   });
   if (!result || result.recipients.length === 0) return [];
-  await sendEmail({ to: result.recipients.map((r) => r.email), subject, text: bodyFor(result.ctx) });
+  await sendEmail({ to: result.recipients.map((r) => r.email), subject: typeof subject === "function" ? subject(result.ctx) : subject, text: bodyFor(result.ctx) });
   return result.recipients.map((r) => r.email);
 }
 
@@ -104,7 +108,7 @@ async function notifyUser(
   actorRole: Role,
   requestId: string,
   targetUserId: (ctx: RequestContext) => string,
-  subject: string,
+  subject: string | ((ctx: RequestContext) => string),
   bodyFor: (ctx: RequestContext) => string,
 ): Promise<string[]> {
   const result = await withGrantScope(actorId, actorRole, async (tx) => {
@@ -116,7 +120,7 @@ async function notifyUser(
     return { ctx, recipients };
   });
   if (!result || result.recipients.length === 0) return [];
-  await sendEmail({ to: result.recipients.map((r) => r.email), subject, text: bodyFor(result.ctx) });
+  await sendEmail({ to: result.recipients.map((r) => r.email), subject: typeof subject === "function" ? subject(result.ctx) : subject, text: bodyFor(result.ctx) });
   return result.recipients.map((r) => r.email);
 }
 
@@ -125,7 +129,7 @@ async function notifyUsers(
   actorRole: Role,
   requestId: string,
   targetUserIds: string[],
-  subject: string,
+  subject: string | ((ctx: RequestContext) => string),
   bodyFor: (ctx: RequestContext) => string,
 ): Promise<string[]> {
   const ids = targetUserIds.filter((id) => id !== actorId);
@@ -137,7 +141,7 @@ async function notifyUsers(
     return { ctx, recipients };
   });
   if (!result || result.recipients.length === 0) return [];
-  await sendEmail({ to: result.recipients.map((r) => r.email), subject, text: bodyFor(result.ctx) });
+  await sendEmail({ to: result.recipients.map((r) => r.email), subject: typeof subject === "function" ? subject(result.ctx) : subject, text: bodyFor(result.ctx) });
   return result.recipients.map((r) => r.email);
 }
 
@@ -199,8 +203,34 @@ export function notifyReturnToApprover(actorId: string, requestId: string, reaso
   );
 }
 
+// Read after the payment commits, so ctx.stage says what it achieved: an
+// advance waiting on its tax invoice, a part-payment with a balance still
+// to go, or the request settled in full.
 export function notifyPay(actorId: string, requestId: string): Promise<string[]> {
-  return notifyUser(actorId, "payer", requestId, (ctx) => ctx.raisedBy, "Paid", (ctx) => `${subjectLine(ctx)} has been paid.`);
+  return notifyUser(
+    actorId,
+    "payer",
+    requestId,
+    (ctx) => ctx.raisedBy,
+    (ctx) => (ctx.stage === "awaiting_invoice" ? "Advance paid · invoice awaited" : ctx.stage === "to_pay" ? "Part paid" : "Paid"),
+    (ctx) =>
+      ctx.stage === "awaiting_invoice"
+        ? `The advance on ${subjectLine(ctx)} has been paid. Attach the vendor's tax invoice on the request when it arrives.`
+        : ctx.stage === "to_pay"
+          ? `A part payment on ${subjectLine(ctx)} has been made. The balance is still to be paid.`
+          : `${subjectLine(ctx)} has been paid.`,
+  );
+}
+
+export function notifyInvoiceAttached(actorId: string, requestId: string): Promise<string[]> {
+  return notifyRoles(
+    actorId,
+    "requester",
+    requestId,
+    ["payer"],
+    "Invoice attached · balance to pay",
+    (ctx) => `The tax invoice for ${subjectLine(ctx)} has been attached. The balance is ready for payment. Invoice total: ${formatMinorUnits(ctx.amountMinor, ctx.currency)}.`,
+  );
 }
 
 export function notifyReturnToAccounts(actorId: string, requestId: string, reason: string): Promise<string[]> {

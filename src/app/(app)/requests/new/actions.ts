@@ -24,7 +24,7 @@ export async function requestUploadSlot(mime: string): Promise<UploadSlotResult>
 
 // Called by the capture screen the moment the first attachment finishes
 // uploading — the client awaits this synchronously (with its own timeout)
-// before showing the confirm step; see CaptureForm.tsx. Never throws:
+// before showing the confirm step; see CaptureWizard.tsx. Never throws:
 // runExtraction itself degrades an unconfigured key/API failure/malformed
 // response to a recorded failed attempt, never a silent one.
 export async function runExtractionAction(storageKey: string, mime: string): Promise<RunExtractionResult> {
@@ -43,7 +43,7 @@ export async function checkDuplicateWarningAction(
 }
 
 export type SubmitFormState =
-  | { ok: true; ref: string }
+  | { ok: true; ref: string; requestId: string }
   | { ok: false; error: string; duplicate?: { match: DuplicateMatch; verdict: DuplicateVerdict } }
   | undefined;
 
@@ -55,6 +55,12 @@ export async function submitRequestAction(input: {
   vendor: string;
   gstinOnBill: string;
   note: string;
+  kind?: "invoice" | "advance";
+  // What the requester wants paid now, as typed. Empty means the whole amount.
+  payNow?: string;
+  payNowReason?: string;
+  quotationNo?: string;
+  invoiceExpectedBy?: string;
   attachments: Attachment[];
   linkedRequestId?: string | null;
   overrideDuplicateReason?: string;
@@ -68,6 +74,13 @@ export async function submitRequestAction(input: {
     return { ok: false, error: "Enter a valid amount." };
   }
 
+  let payNowMinor: number | undefined;
+  if (input.payNow) {
+    const parsed = parseAmountToMinor(input.payNow);
+    if (parsed === null) return { ok: false, error: "Enter a valid amount to pay now." };
+    payNowMinor = parsed;
+  }
+
   const result = await submitRequestCore({
     userId: session.userId,
     ip,
@@ -79,6 +92,11 @@ export async function submitRequestAction(input: {
     vendor: input.vendor || undefined,
     gstinOnBill: input.gstinOnBill || undefined,
     note: input.note || undefined,
+    kind: input.kind,
+    payNowMinor,
+    payNowReason: input.payNowReason || undefined,
+    quotationNo: input.quotationNo || undefined,
+    invoiceExpectedBy: input.invoiceExpectedBy || undefined,
     attachments: input.attachments,
     linkedRequestId: input.linkedRequestId || undefined,
     overrideDuplicate: input.overrideDuplicateReason ? { reason: input.overrideDuplicateReason } : undefined,
@@ -88,5 +106,5 @@ export async function submitRequestAction(input: {
   if (!result.ok) {
     return { ok: false, error: result.error, duplicate: result.duplicate };
   }
-  return { ok: true, ref: result.ref };
+  return { ok: true, ref: result.ref, requestId: result.requestId };
 }
