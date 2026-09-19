@@ -3,7 +3,7 @@ import { verifySession } from "@/auth/dal";
 import { withGrantScope, UnauthorizedGrantError } from "@/db/runtime";
 import { department, event, request, user } from "@/db/schema";
 import { actorHoldsRole } from "@/duplicates/duplicateCore";
-import { CaptureForm } from "./CaptureForm";
+import { CaptureWizard } from "./CaptureWizard";
 
 export default async function NewRequestPage({ searchParams }: PageProps<"/requests/new">) {
   const session = await verifySession();
@@ -66,7 +66,7 @@ export default async function NewRequestPage({ searchParams }: PageProps<"/reque
           {reconsidering.declinedBy && <> — declined by {reconsidering.declinedBy}</>}. This will be a new request linked back to it.
         </p>
       )}
-      <CaptureForm departments={departments} linkedRequestId={linkedRequestId} canOverrideDuplicate={canOverride} />
+      <CaptureWizard departments={departments} linkedRequestId={linkedRequestId} canOverrideDuplicate={canOverride} />
     </div>
   );
 }
