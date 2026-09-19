@@ -9,10 +9,14 @@ import { user } from "./user";
 // which checks fired (e.g. "vendor_invoice_fy", "file_checksum"), plain
 // text[] rather than a fixed enum since the signal set is expected to grow
 // (perceptual hash, once slice 4 computes it). overriddenBy/reason are
-// only ever set together, by a super_admin, and only ever lift the
-// application's own warning — the structural guarantee is
-// request.one_payment_per_invoice and payment.reference's own unique
-// index, neither of which this row can touch.
+// only ever set together, and only ever lift the application's own
+// warning — the structural guarantee is request.one_payment_per_invoice
+// and payment.reference's own unique index, neither of which this row can
+// touch. For blocked_paid the actor is a super_admin. For matched_advance
+// they are the recorded DECLINE of the offer to attach the bill to an open
+// advance (concept-v2.html §09), made by whoever was offered it; a
+// matched_advance row with overriddenBy null means the offer was surfaced
+// and not answered (raised offline) — the accounts desk asks again.
 export const duplicateCheck = pgTable(
   "duplicate_check",
   {

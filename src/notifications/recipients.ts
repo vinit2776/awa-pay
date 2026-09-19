@@ -222,10 +222,13 @@ export function notifyPay(actorId: string, requestId: string): Promise<string[]>
   );
 }
 
-export function notifyInvoiceAttached(actorId: string, requestId: string): Promise<string[]> {
+// actorRole is the requester for the usual case (they attach their own
+// advance's invoice) and the accountant when accounts folds a bill into an
+// open advance (attachToOpenAdvance) — either way the payer is who's told.
+export function notifyInvoiceAttached(actorId: string, requestId: string, actorRole: Role = "requester"): Promise<string[]> {
   return notifyRoles(
     actorId,
-    "requester",
+    actorRole,
     requestId,
     ["payer"],
     "Invoice attached · balance to pay",

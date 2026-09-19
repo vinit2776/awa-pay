@@ -1,0 +1,1 @@
+ALTER TYPE "public"."duplicate_verdict" ADD VALUE 'matched_advance';

@@ -53,17 +53,18 @@ export const vendorDocumentKindEnum = pgEnum("vendor_document_kind", [
   "other",
 ]);
 
-// "matched_advance" is deliberately excluded — it only makes sense once a
-// request can be part-paid (docs/concept-v2.html §09), out of scope for
-// this slice. Five of the brief's six verdicts, matching §08 exactly:
-// paid -> hard block, open -> warn, rejected -> escalate, held -> link,
-// nothing -> silent (represented here as "none").
+// The brief's six verdicts, matching §08 exactly: paid -> hard block,
+// open -> warn, rejected -> escalate, held -> link, open advance ->
+// attach (§09), nothing -> silent (represented here as "none").
+// matched_advance was added after the advance/part-payment slice
+// (0023-0025) made an open advance possible at all.
 export const duplicateVerdictEnum = pgEnum("duplicate_verdict", [
   "blocked_paid",
   "warned_open",
   "escalated_rejected",
   "linked_held",
   "none",
+  "matched_advance",
 ]);
 
 // The six fields the confirmation screen shows (concept-v2.html §02/§15).

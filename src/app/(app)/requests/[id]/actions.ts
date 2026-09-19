@@ -27,6 +27,7 @@ import {
   accountRequest,
   approveRequest,
   attachInvoice,
+  attachToOpenAdvance,
   holdRequest,
   payRequest,
   rejectRequest,
@@ -151,18 +152,44 @@ export async function releaseHoldAction(requestId: string): Promise<TransitionRe
 
 export async function accountAction(
   requestId: string,
-  input: { companyId: string; vendorId: string; headId: string; voucherNo: string; bookedOn: string; overrideDuplicateReason?: string },
+  input: {
+    companyId: string;
+    vendorId: string;
+    headId: string;
+    voucherNo: string;
+    bookedOn: string;
+    overrideDuplicateReason?: string;
+    declineOpenAdvanceReason?: string;
+  },
 ): Promise<TransitionResult> {
   const session = await verifySession();
   const meta = await getClientMeta();
-  const { overrideDuplicateReason, ...rest } = input;
+  const { overrideDuplicateReason, declineOpenAdvanceReason, ...rest } = input;
   const result = await accountRequest(
     session.userId,
     requestId,
-    { ...rest, overrideDuplicate: overrideDuplicateReason ? { reason: overrideDuplicateReason } : undefined },
+    {
+      ...rest,
+      overrideDuplicate: overrideDuplicateReason ? { reason: overrideDuplicateReason } : undefined,
+      declineOpenAdvance: declineOpenAdvanceReason ? { reason: declineOpenAdvanceReason } : undefined,
+    },
     meta,
   );
   return afterTransition(requestId, result, () => notifyAccount(session.userId, requestId));
+}
+
+// The accounts desk's "Attach to REQ-xxxx" (the sixth duplicate verdict).
+// requestId is the NEW bill; the advance it becomes the invoice of is in
+// input. Nothing is created — the bill is closed and the advance moves on.
+export async function attachToAdvanceAction(
+  requestId: string,
+  input: { advanceRequestId: string; vendorId: string; invoiceNo?: string; invoiceDate?: string },
+): Promise<TransitionResult> {
+  const session = await verifySession();
+  const meta = await getClientMeta();
+  const result = await attachToOpenAdvance(session.userId, requestId, input, meta);
+  if (result.ok) revalidatePath(`/requests/${input.advanceRequestId}`);
+  return afterTransition(requestId, result, () => notifyInvoiceAttached(session.userId, input.advanceRequestId, "accountant"));
 }
 
 export async function searchVendorsAction(term: string): Promise<VendorSummary[]> {

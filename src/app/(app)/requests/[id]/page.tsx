@@ -267,7 +267,15 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
         <ApproverPanel requestId={req.id} stage={req.stage} />
       )}
       {role === "accountant" && req.stage === "with_accounts" && (
-        <AccountantPanel requestId={req.id} companies={companies} heads={heads} vendorNameHint={req.vendor} canOverrideDuplicate={canOverrideDuplicate} />
+        <AccountantPanel
+          requestId={req.id}
+          companies={companies}
+          heads={heads}
+          vendorNameHint={req.vendor}
+          canOverrideDuplicate={canOverrideDuplicate}
+          invoiceNo={req.invoiceNo}
+          invoiceDate={req.invoiceDate}
+        />
       )}
       {role === "payer" && req.stage === "to_pay" && bankReadiness && (
         <PayerPanel

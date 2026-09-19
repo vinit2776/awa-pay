@@ -2,8 +2,9 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { accountAction, createVendorAction, returnToApproverAction, searchVendorsAction } from "./actions";
+import { accountAction, attachToAdvanceAction, createVendorAction, returnToApproverAction, searchVendorsAction } from "./actions";
 import type { DuplicateMatch } from "@/duplicates/duplicateCore";
+import { formatMinorUnits } from "@/lib/money";
 import type { TransitionResult } from "@/requests/transitions";
 
 type Option = { id: string; name: string };
@@ -15,12 +16,19 @@ export function AccountantPanel({
   heads,
   vendorNameHint,
   canOverrideDuplicate,
+  invoiceNo,
+  invoiceDate,
 }: {
   requestId: string;
   companies: Option[];
   heads: Option[];
   vendorNameHint: string | null;
   canOverrideDuplicate: boolean;
+  // What the bill already says. Attaching it to an advance writes the number
+  // into the duplicate index, so it can't be blank; when the requester left
+  // either out, the accountant supplies it in the attach card below.
+  invoiceNo: string | null;
+  invoiceDate: string | null;
 }) {
   const router = useRouter();
   const [mode, setMode] = useState<"account" | "return">("account");
@@ -33,6 +41,13 @@ export function AccountantPanel({
   const [error, setError] = useState<string | null>(null);
   const [duplicate, setDuplicate] = useState<DuplicateMatch | null>(null);
   const [overrideReason, setOverrideReason] = useState("");
+  // The sixth verdict: the chosen vendor has an advance paid and its tax
+  // invoice still awaited. Set from accountAction's refusal, cleared when the
+  // vendor changes (the answer belongs to that vendor).
+  const [openAdvances, setOpenAdvances] = useState<DuplicateMatch[]>([]);
+  const [declineReason, setDeclineReason] = useState("");
+  const [attachInvoiceNo, setAttachInvoiceNo] = useState(invoiceNo ?? "");
+  const [attachInvoiceDate, setAttachInvoiceDate] = useState(invoiceDate ?? "");
 
   // Vendor matching — pre-filled from the requester's own free-text
   // capture, since they already typed a name (docs/START-HERE-slice-3.md's
@@ -58,18 +73,54 @@ export function AccountantPanel({
     router.refresh();
   }
 
-  async function confirmAccounting(overrideDuplicateReason?: string) {
+  async function confirmAccounting(overrideDuplicateReason?: string, declineOpenAdvanceReason?: string) {
     if (!selectedVendor) return;
     setPending(true);
     setError(null);
-    const result: TransitionResult = await accountAction(requestId, { companyId, vendorId: selectedVendor.id, headId, voucherNo, bookedOn, overrideDuplicateReason });
+    const result: TransitionResult = await accountAction(requestId, {
+      companyId,
+      vendorId: selectedVendor.id,
+      headId,
+      voucherNo,
+      bookedOn,
+      overrideDuplicateReason,
+      declineOpenAdvanceReason,
+    });
     setPending(false);
     if (!result.ok) {
       setError(result.error);
-      setDuplicate(result.duplicate?.match ?? null);
+      // Two different refusals arrive here: the red already-paid block, and
+      // the amber open-advance offer. They get different cards.
+      if (result.duplicate?.verdict === "matched_advance") {
+        setDuplicate(null);
+        setOpenAdvances(result.openAdvances ?? [result.duplicate.match]);
+      } else {
+        setDuplicate(result.duplicate?.match ?? null);
+        setOpenAdvances([]);
+      }
       return;
     }
     router.refresh();
+  }
+
+  // "Attach to REQ-xxxx": no second request is created. This bill closes and
+  // its invoice lands on the advance, which is where the person goes next.
+  async function attachToAdvance(advanceRequestId: string) {
+    if (!selectedVendor) return;
+    setPending(true);
+    setError(null);
+    const result = await attachToAdvanceAction(requestId, {
+      advanceRequestId,
+      vendorId: selectedVendor.id,
+      invoiceNo: invoiceNo ? undefined : attachInvoiceNo,
+      invoiceDate: invoiceDate ? undefined : attachInvoiceDate,
+    });
+    setPending(false);
+    if (!result.ok) {
+      setError(result.error);
+      return;
+    }
+    router.push(`/requests/${advanceRequestId}`);
   }
 
   async function searchVendor() {
@@ -118,7 +169,15 @@ export function AccountantPanel({
                   {selectedVendor.name}
                   {selectedVendor.gstin && <span className="text-zinc-500"> · {selectedVendor.gstin}</span>}
                 </span>
-                <button type="button" onClick={() => setSelectedVendor(null)} className="text-xs underline">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedVendor(null);
+                    setOpenAdvances([]);
+                    setDuplicate(null);
+                  }}
+                  className="text-xs underline"
+                >
                   Change
                 </button>
               </div>
@@ -270,6 +329,81 @@ export function AccountantPanel({
                   </button>
                 </div>
               )}
+            </div>
+          )}
+          {openAdvances.length > 0 && (
+            <div className="flex flex-col gap-3 rounded border border-amber-400 bg-amber-50 p-3 text-sm dark:border-amber-800 dark:bg-amber-950">
+              <p className="font-medium">This vendor has an advance paid and its tax invoice still awaited.</p>
+              <p>
+                If this bill is that invoice, attach it — booking it as its own request would pay the advance and then pay the full invoice as well.
+              </p>
+              <ul className="flex flex-col gap-2">
+                {openAdvances.map((m) => (
+                  <li key={m.requestId} className="flex flex-col gap-2 rounded border border-amber-300 bg-white/60 p-2 dark:border-amber-800 dark:bg-black/30">
+                    {m.advance ? (
+                      <>
+                        <p>
+                          <a href={`/requests/${m.requestId}`} target="_blank" rel="noreferrer" className="font-medium underline">
+                            {m.advance.ref}
+                          </a>{" "}
+                          · {formatMinorUnits(m.advance.paidMinor, m.advance.currency)} paid of {formatMinorUnits(m.advance.quotedMinor, m.advance.currency)} quoted
+                        </p>
+                        <button
+                          type="button"
+                          disabled={pending || (!invoiceNo && !attachInvoiceNo.trim()) || (!invoiceDate && !attachInvoiceDate)}
+                          onClick={() => void attachToAdvance(m.requestId)}
+                          className="self-start rounded bg-black px-3 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-white dark:text-black"
+                        >
+                          Attach to {m.advance.ref}
+                        </button>
+                      </>
+                    ) : (
+                      <p>An advance in a department you can&apos;t see{m.viewerHint && <> — {m.viewerHint}</>}. You can&apos;t attach to it from here.</p>
+                    )}
+                  </li>
+                ))}
+              </ul>
+              {(!invoiceNo || !invoiceDate) && openAdvances.some((m) => m.advance) && (
+                <div className="flex flex-col gap-2">
+                  <p className="text-xs text-zinc-600 dark:text-zinc-400">The bill has no {!invoiceNo && "invoice number"}{!invoiceNo && !invoiceDate && " or "}{!invoiceDate && "invoice date"} on it. Attaching needs it.</p>
+                  {!invoiceNo && (
+                    <input
+                      type="text"
+                      value={attachInvoiceNo}
+                      onChange={(e) => setAttachInvoiceNo(e.target.value)}
+                      placeholder="Invoice number"
+                      className="rounded border border-zinc-300 px-3 py-2 text-sm dark:border-zinc-700 dark:bg-black"
+                    />
+                  )}
+                  {!invoiceDate && (
+                    <input
+                      type="date"
+                      value={attachInvoiceDate}
+                      onChange={(e) => setAttachInvoiceDate(e.target.value)}
+                      className="rounded border border-zinc-300 px-3 py-2 text-sm dark:border-zinc-700 dark:bg-black"
+                    />
+                  )}
+                </div>
+              )}
+              <div className="flex flex-col gap-2 border-t border-amber-300 pt-2 dark:border-amber-800">
+                <textarea
+                  value={declineReason}
+                  onChange={(e) => setDeclineReason(e.target.value)}
+                  placeholder="Why this is a different bill, not the advance's invoice"
+                  aria-label="Why this is a different bill"
+                  rows={2}
+                  className="rounded border border-zinc-300 px-3 py-2 text-sm dark:border-zinc-700 dark:bg-black"
+                />
+                <button
+                  type="button"
+                  disabled={pending || !declineReason.trim() || !companyId || !headId || !voucherNo.trim()}
+                  onClick={() => void confirmAccounting(undefined, declineReason)}
+                  className="self-start rounded border border-amber-600 px-3 py-2 text-sm font-medium text-amber-900 disabled:opacity-50 dark:text-amber-200"
+                >
+                  Different bill — account it separately
+                </button>
+                <p className="text-xs text-zinc-600 dark:text-zinc-400">Recorded in the request&apos;s trail with your reason.</p>
+              </div>
             </div>
           )}
           <button
