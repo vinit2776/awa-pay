@@ -2,6 +2,9 @@ import { and, asc, eq, ilike, isNull, or } from "drizzle-orm";
 import { revokeAllSessionsForUser } from "@/auth/sessionStore";
 import { type Role, withGrantScope } from "@/db/runtime";
 import { roleGrant, user } from "@/db/schema";
+// Shared with the grant form, so what it offers and what this enforces
+// can't drift apart.
+import { ALWAYS_GLOBAL_ROLES, COMPANY_SCOPED_ROLES } from "./grantRules";
 
 // Pure orchestration, mirrors src/vendors/vendorsCore.ts's shape. Every
 // function here takes the super_admin's own actorId and goes through the
@@ -53,13 +56,6 @@ export type GrantRoleInput = {
 };
 
 export type GrantRoleResult = { ok: true; id: string } | { ok: false; error: string };
-
-// Roles with no department scoping at all — always global, per AGENTS.md's
-// own table ("Super admin: Always global", "Developer: Always global").
-const ALWAYS_GLOBAL_ROLES = new Set<Role>(["super_admin", "developer"]);
-// Roles with no company scoping at all — company scope only means
-// something for the two desks that touch the books.
-const COMPANY_SCOPED_ROLES = new Set<Role>(["accountant", "payer"]);
 
 // Defense-in-depth mirror of the DB CHECK constraints
 // (role_grant_requester_not_global_check, role_grant_dept_scope_list_check,
