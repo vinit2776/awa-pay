@@ -13,6 +13,7 @@ import { verifySession } from "@/auth/dal";
 import { checkPaymentBankReadiness } from "@/vendors/verifyCore";
 import { actorHoldsRole } from "@/duplicates/duplicateCore";
 import { ApproverPanel } from "./ApproverPanel";
+import { AttachInvoicePanel } from "./AttachInvoicePanel";
 import { AccountantPanel } from "./AccountantPanel";
 import { ConversationPanel, type ConversationEntry } from "./ConversationPanel";
 import { PayerPanel } from "./PayerPanel";
@@ -29,7 +30,7 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
   }
   const { role, request: req } = resolved;
 
-  const [department_, files, commentAttachments, accountingRows, paymentRow, events, comments, openQueryRows, routedApproverName, flagContext] = await withGrantScope(
+  const [department_, files, commentAttachments, accountingRows, payments, events, comments, openQueryRows, routedApproverName, flagContext] = await withGrantScope(
     session.userId,
     role,
     async (tx) => {
@@ -49,7 +50,7 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
         .from(accounting)
         .where(eq(accounting.requestId, req.id))
         .orderBy(desc(accounting.accountedAt));
-      const [pay] = await tx.select().from(payment).where(eq(payment.requestId, req.id)).limit(1);
+      const paymentRows = await tx.select().from(payment).where(eq(payment.requestId, req.id)).orderBy(asc(payment.paidAt));
       const eventRows = await tx
         .select({ event, actorName: user.name })
         .from(event)
@@ -75,7 +76,7 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
         ? (await tx.select({ name: user.name }).from(user).where(eq(user.id, req.routedApproverId)).limit(1))[0]?.name ?? null
         : null;
       const flagCtx = await loadFlagContext(tx, [req]);
-      return [dept, bills, attachments, accountingHistory, pay ?? null, eventRows, commentRows, openQueries, routedName, flagCtx];
+      return [dept, bills, attachments, accountingHistory, paymentRows, eventRows, commentRows, openQueries, routedName, flagCtx];
     },
   );
 
@@ -107,6 +108,22 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
   }));
 
   const latestAccounting = accountingRows[0] ?? null;
+
+  // The settlement ledger in miniature (concept-v2.html section 09): what
+  // is owed, what has moved, what is still due. Balance is derived, never
+  // typed — payRequest enforces the same ceiling under the row lock.
+  const settledMinor = payments.reduce((sum, p) => sum + p.amountMinor, 0);
+  const balanceMinor = req.amountMinor - settledMinor;
+  const isAdvance = req.kind === "advance";
+  const invoiceIsIn = !isAdvance || req.invoiceAttachedAt !== null;
+  // What the payer should be prompted to pay next: an advance is capped at
+  // what was asked for until its invoice is in; a part-payment request's
+  // first payment is the part that was asked for; otherwise the balance.
+  const suggestedPayMinor = !invoiceIsIn
+    ? Math.max((req.payNowMinor ?? 0) - settledMinor, 0)
+    : req.payNowMinor !== null && settledMinor < req.payNowMinor
+      ? req.payNowMinor - settledMinor
+      : balanceMinor;
 
   // The accountant panel needs company/head pickers — only fetched when
   // this viewer could actually need them, since company_select is
@@ -144,9 +161,27 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
           {req.vendor ?? "Unknown vendor"} · {department_?.name} · {formatMinorUnits(req.amountMinor, req.currency)}
         </p>
         <p className="text-sm text-zinc-500 dark:text-zinc-500">
-          stage: {req.stage}
+          stage: {req.stage.replace(/_/g, " ")}
           {req.revision > 1 && ` · revision ${req.revision}`}
         </p>
+        {(isAdvance || req.payNowMinor !== null) && (
+          <p className="mt-2 rounded bg-violet-50 px-3 py-2 text-sm text-violet-900 dark:bg-violet-950 dark:text-violet-200">
+            {isAdvance ? (
+              <>
+                <strong>Advance</strong> — money goes out before the tax invoice.{" "}
+                {req.payNowMinor !== null && <>Asking for {formatMinorUnits(req.payNowMinor, req.currency)} now of a {formatMinorUnits(req.amountMinor, req.currency)} job.</>}
+                {req.quotationNo && <> Quotation {req.quotationNo}.</>}
+                {!invoiceIsIn && req.invoiceExpectedBy && <> Tax invoice expected by {req.invoiceExpectedBy}.</>}
+                {invoiceIsIn && <> Tax invoice attached.</>}
+              </>
+            ) : (
+              <>
+                <strong>Part payment</strong> — asking for {formatMinorUnits(req.payNowMinor!, req.currency)} now of a {formatMinorUnits(req.amountMinor, req.currency)} bill.
+              </>
+            )}
+            {req.payNowReason && <> Why: {req.payNowReason}.</>}
+          </p>
+        )}
       </div>
 
       {role === "approver" && routedApproverName && req.stage === "awaiting_approval" && (
@@ -157,7 +192,7 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
 
       {req.note && <p className="text-sm">{req.note}</p>}
 
-      {(latestAccounting || paymentRow) && (
+      {(latestAccounting || payments.length > 0) && (
         <div className="flex flex-col gap-1 text-sm text-zinc-600 dark:text-zinc-400">
           {latestAccounting && (
             <p>
@@ -167,9 +202,15 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
               </Link>
             </p>
           )}
-          {paymentRow && (
-            <p>
-              Paid {paymentRow.mode.toUpperCase()} · {paymentRow.valueDate} · UTR {paymentRow.reference}
+          {payments.map((p) => (
+            <p key={p.id}>
+              Paid {formatMinorUnits(p.amountMinor, req.currency)} {p.mode.toUpperCase()} · {p.valueDate} · UTR {p.reference}
+            </p>
+          ))}
+          {payments.length > 0 && (
+            <p className="font-medium text-zinc-800 dark:text-zinc-200">
+              Paid so far {formatMinorUnits(settledMinor, req.currency)} of {formatMinorUnits(req.amountMinor, req.currency)}
+              {isAdvance && !invoiceIsIn ? " quoted" : ""} · balance {formatMinorUnits(balanceMinor, req.currency)}
             </p>
           )}
         </div>
@@ -211,6 +252,17 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
         </Link>
       )}
 
+      {role === "requester" && req.stage === "awaiting_invoice" && req.raisedBy === session.userId && (
+        <AttachInvoicePanel
+          requestId={req.id}
+          vendor={req.vendor}
+          currency={req.currency}
+          quotedMinor={req.amountMinor}
+          paidMinor={settledMinor}
+          expectedBy={req.invoiceExpectedBy}
+        />
+      )}
+
       {role === "approver" && (req.stage === "awaiting_approval" || req.stage === "on_hold") && (
         <ApproverPanel requestId={req.id} stage={req.stage} />
       )}
@@ -218,7 +270,15 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
         <AccountantPanel requestId={req.id} companies={companies} heads={heads} vendorNameHint={req.vendor} canOverrideDuplicate={canOverrideDuplicate} />
       )}
       {role === "payer" && req.stage === "to_pay" && bankReadiness && (
-        <PayerPanel requestId={req.id} bankAccountsJson={companyForPayer?.bankAccounts ?? []} readiness={bankReadiness} />
+        <PayerPanel
+          requestId={req.id}
+          bankAccountsJson={companyForPayer?.bankAccounts ?? []}
+          readiness={bankReadiness}
+          suggestedAmountMinor={suggestedPayMinor}
+          balanceMinor={balanceMinor}
+          currency={req.currency}
+          invoiceIsIn={invoiceIsIn}
+        />
       )}
 
       <div className="flex flex-col gap-1">

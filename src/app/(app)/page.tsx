@@ -17,7 +17,7 @@ export default async function Home() {
   const now = new Date();
 
   const tiles: Tile[] = [];
-  if (roles.has("requester")) tiles.push({ href: "/requests", label: "Needs you", count: counts.requester, empty: "Nothing sent back or waiting on an answer" });
+  if (roles.has("requester")) tiles.push({ href: "/requests", label: "Needs you", count: counts.requester, empty: "Nothing sent back, awaiting an invoice, or waiting on an answer" });
   if (roles.has("approver")) tiles.push({ href: "/approvals", label: "Awaiting your approval", count: counts.approver, empty: "Nothing to approve" });
   if (roles.has("accountant")) tiles.push({ href: "/accounts", label: "To account", count: counts.accountant, empty: "Nothing to book" });
   if (roles.has("payer")) tiles.push({ href: "/payments", label: "To pay", count: counts.payer, empty: "Nothing to pay" });

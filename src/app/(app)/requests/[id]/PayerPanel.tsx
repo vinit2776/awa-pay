@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { parseAmountToMinor } from "@/lib/money";
+import { formatMinorUnits, parseAmountToMinor } from "@/lib/money";
 import { parseBankAccounts } from "@/lib/bankAccounts";
 import type { PaymentMode } from "@/requests/transitions";
 import type { PaymentBankReadiness } from "@/vendors/verifyCore";
@@ -29,10 +29,23 @@ export function PayerPanel({
   requestId,
   bankAccountsJson,
   readiness,
+  suggestedAmountMinor,
+  balanceMinor,
+  currency,
+  invoiceIsIn,
 }: {
   requestId: string;
   bankAccountsJson: unknown;
   readiness: PaymentBankReadiness;
+  // What to pay next (an advance's asked-for amount, a part-payment's first
+  // part, or the balance) and the balance overall. The server enforces the
+  // ceiling either way; these only save the payer from typing it wrong.
+  suggestedAmountMinor: number;
+  balanceMinor: number;
+  currency: string;
+  // False for an advance still waiting on its tax invoice: paying it can't
+  // close the request, whatever the amount.
+  invoiceIsIn: boolean;
 }) {
   const router = useRouter();
   const accounts = parseBankAccounts(bankAccountsJson);
@@ -40,7 +53,7 @@ export function PayerPanel({
   const [accountId, setAccountId] = useState(accounts[0]?.id ?? "");
   const [paymentMode, setPaymentMode] = useState<PaymentMode>("neft");
   const [valueDate, setValueDate] = useState(() => new Date().toISOString().slice(0, 10));
-  const [amount, setAmount] = useState("");
+  const [amount, setAmount] = useState(() => (suggestedAmountMinor > 0 ? (suggestedAmountMinor / 100).toFixed(2) : ""));
   const [tds, setTds] = useState("0");
   const [reference, setReference] = useState("");
   const [reason, setReason] = useState("");
@@ -115,6 +128,11 @@ export function PayerPanel({
     }
     router.refresh();
   }
+
+  // Say what the button will actually do: only a payment that clears the
+  // balance once the invoice is in closes the request.
+  const typedMinor = parseAmountToMinor(amount);
+  const payLabel = !invoiceIsIn ? "Record advance payment" : typedMinor === balanceMinor ? "Mark paid & close" : "Record part payment";
 
   if (!readiness.ready) {
     return (
@@ -287,6 +305,9 @@ export function PayerPanel({
             onChange={(e) => setValueDate(e.target.value)}
             className="rounded border border-zinc-300 px-3 py-2 text-sm dark:border-zinc-700 dark:bg-black"
           />
+          <p className="text-xs text-zinc-600 dark:text-zinc-400">
+            Balance still due: {formatMinorUnits(balanceMinor, currency)}. A payment can&apos;t take the total above what this request can settle.
+          </p>
           <input
             type="text"
             inputMode="decimal"
@@ -348,7 +369,7 @@ export function PayerPanel({
             }}
             className="rounded bg-black px-4 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-white dark:text-black"
           >
-            Mark paid &amp; close
+            {payLabel}
           </button>
         </>
       ) : (
