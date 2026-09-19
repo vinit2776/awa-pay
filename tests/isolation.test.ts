@@ -1,6 +1,7 @@
 import { inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { closeOwnerConnection, dbOwner } from "../scripts/db-owner";
+import { cleanupFixturesForNonce } from "../scripts/fixtures";
 import { __unscopedRuntimeConnectionForGateTestOnly, withGrantScope } from "../src/db/runtime";
 import { department, request, roleGrant, user } from "../src/db/schema";
 
@@ -77,11 +78,11 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await dbOwner.delete(request).where(inArray(request.id, [requestA.id, requestB.id]));
-  await dbOwner.delete(roleGrant).where(inArray(roleGrant.userId, [requesterUser.id]));
-  await dbOwner.delete(department).where(inArray(department.id, [deptA.id, deptB.id]));
-  await dbOwner.delete(user).where(inArray(user.id, [requesterUser.id]));
-  await closeOwnerConnection();
+  try {
+    await cleanupFixturesForNonce(dbOwner, nonce);
+  } finally {
+    await closeOwnerConnection();
+  }
 });
 
 describe("row-level security isolation (the gate)", () => {

@@ -1,7 +1,8 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { Secret, TOTP } from "otpauth";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { closeOwnerConnection, dbOwner } from "../scripts/db-owner";
+import { cleanupFixturesForNonce } from "../scripts/fixtures";
 import { encryptSecret } from "../src/auth/crypto";
 import { attemptLogin } from "../src/auth/loginCore";
 import { verifyMfaCode } from "../src/auth/mfaCore";
@@ -59,12 +60,12 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  const userIds = [plainUser.id, payerUser.id];
-  await dbOwner.delete(session).where(inArray(session.userId, userIds));
-  await dbOwner.delete(loginAttempt).where(inArray(loginAttempt.email, [plainUser.email, payerUser.email, "nobody@example.invalid"]));
-  await dbOwner.delete(roleGrant).where(inArray(roleGrant.userId, userIds));
-  await dbOwner.delete(user).where(inArray(user.id, userIds));
-  await closeOwnerConnection();
+  try {
+    await dbOwner.delete(loginAttempt).where(eq(loginAttempt.email, "nobody@example.invalid"));
+    await cleanupFixturesForNonce(dbOwner, nonce);
+  } finally {
+    await closeOwnerConnection();
+  }
 });
 
 describe("login (the phase-2 gate)", () => {

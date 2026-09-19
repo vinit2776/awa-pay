@@ -22,11 +22,13 @@ jobs:
       # needs real env vars now: collecting page data executes the (app)
       # layout's module graph (src/db/runtime.ts, src/auth/env.ts), which
       # throws on an unset var rather than deferring the check to request
-      # time — acceptable pre-launch, dev-project credentials only.
+      # time. Points at the TEST database, not dev: CI never needs the dev
+      # project's credentials (the build only has to see a value, it does not
+      # connect).
       - run: npm run build
         env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          DATABASE_URL_MIGRATIONS: ${{ secrets.DATABASE_URL_MIGRATIONS }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL_TEST }}
+          DATABASE_URL_MIGRATIONS: ${{ secrets.DATABASE_URL_MIGRATIONS_TEST }}
           SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
           MFA_ENCRYPTION_KEY: ${{ secrets.MFA_ENCRYPTION_KEY }}
           BANK_ACCOUNT_ENCRYPTION_KEY: ${{ secrets.BANK_ACCOUNT_ENCRYPTION_KEY }}
@@ -35,14 +37,21 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
       - run: npm run typecheck
+      # The suite runs against its own Supabase project (docs/test-database.md),
+      # never the dev one — tests/setup.ts refuses to start otherwise, and
+      # only the *_TEST variables are provided here on purpose. Idempotent;
+      # applies any migration a PR adds before the tests need it.
+      - run: npm run db:migrate:test
+        env:
+          DATABASE_URL_TEST: ${{ secrets.DATABASE_URL_TEST }}
+          DATABASE_URL_MIGRATIONS_TEST: ${{ secrets.DATABASE_URL_MIGRATIONS_TEST }}
       # The isolation gate (docs/START-HERE.md phase 1), the auth gate
-      # (phase 2), and the capture gate (phase 3) run against the real dev
-      # Supabase project and real R2 bucket — acceptable pre-launch, no
-      # real data yet.
+      # (phase 2), and the capture gate (phase 3) run against that test
+      # database and the real R2 bucket.
       - run: npm run test
         env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          DATABASE_URL_MIGRATIONS: ${{ secrets.DATABASE_URL_MIGRATIONS }}
+          DATABASE_URL_TEST: ${{ secrets.DATABASE_URL_TEST }}
+          DATABASE_URL_MIGRATIONS_TEST: ${{ secrets.DATABASE_URL_MIGRATIONS_TEST }}
           SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
           MFA_ENCRYPTION_KEY: ${{ secrets.MFA_ENCRYPTION_KEY }}
           BANK_ACCOUNT_ENCRYPTION_KEY: ${{ secrets.BANK_ACCOUNT_ENCRYPTION_KEY }}
