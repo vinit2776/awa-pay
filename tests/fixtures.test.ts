@@ -160,7 +160,7 @@ describe("test-database isolation guard", () => {
     const saved = process.env.DATABASE_URL_TEST;
     try {
       delete process.env.DATABASE_URL_TEST;
-      expect(() => requireTestUrls()).toThrow(/DATABASE_URL_TEST not set/);
+      expect(() => requireTestUrls()).toThrow(/DATABASE_URL_TEST.* not set/);
     } finally {
       if (saved === undefined) delete process.env.DATABASE_URL_TEST;
       else process.env.DATABASE_URL_TEST = saved;
