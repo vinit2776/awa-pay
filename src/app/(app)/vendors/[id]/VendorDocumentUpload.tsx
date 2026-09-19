@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { buttonClass, inputClass } from "@/ui/styles";
 import { addVendorDocumentAction, requestVendorDocumentUploadSlot } from "./actions";
 import type { vendorDocument } from "@/db/schema";
 
@@ -62,26 +63,35 @@ export function VendorDocumentUpload({ vendorId }: { vendorId: string }) {
   }
 
   return (
-    <div className="flex flex-col gap-2 rounded border border-dashed border-zinc-300 p-3 dark:border-zinc-700">
-      {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
-      <select value={kind} onChange={(e) => setKind(e.target.value as DocumentKind)} className="rounded border border-zinc-300 px-3 py-2 text-sm dark:border-zinc-700 dark:bg-black">
-        {KIND_OPTIONS.map((o) => (
-          <option key={o.value} value={o.value}>
-            {o.label}
-          </option>
-        ))}
-      </select>
-      <input
-        type="file"
-        accept="image/jpeg,application/pdf"
-        disabled={pending}
-        onChange={(e) => {
-          const file = e.target.files?.[0];
-          if (file) void upload(file);
-          e.target.value = "";
-        }}
-        className="text-sm"
-      />
+    <div className="flex flex-col gap-2 border-t border-line-soft pt-3">
+      {error && (
+        <p role="alert" className="text-sm text-danger">
+          {error}
+        </p>
+      )}
+      <div className="flex flex-wrap gap-2">
+        <select aria-label="Document type" value={kind} onChange={(e) => setKind(e.target.value as DocumentKind)} className={`${inputClass} w-auto flex-1`}>
+          {KIND_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+        <label className={`${buttonClass("secondary", "sm")} cursor-pointer`}>
+          {pending ? "Uploading…" : "Upload"}
+          <input
+            type="file"
+            accept="image/jpeg,application/pdf"
+            disabled={pending}
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) void upload(file);
+              e.target.value = "";
+            }}
+          />
+        </label>
+      </div>
     </div>
   );
 }
