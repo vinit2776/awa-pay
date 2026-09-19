@@ -162,6 +162,13 @@
       "when": 1788700600000,
       "tag": "0022_role_grant_requester_check",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1789900000000,
+      "tag": "0026_query_directed_users",
+      "breakpoints": true
     }
   ]
 }

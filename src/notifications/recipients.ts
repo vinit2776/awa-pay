@@ -218,8 +218,37 @@ export function notifyResubmit(actorId: string, requestId: string): Promise<stri
   return notifyRoles(actorId, "requester", requestId, ["approver"], "Resubmitted", (ctx) => `${subjectLine(ctx)} was resubmitted and needs re-approval.`);
 }
 
-export function notifyQueryRaised(actorId: string, actorRole: Role, requestId: string, directedAt: Role[], question: string): Promise<string[]> {
-  return notifyRoles(actorId, actorRole, requestId, directedAt, "A question needs an answer", (ctx) => `${subjectLine(ctx)} has an open question:\n\n${question}`);
+// Named people get their own email ("you were asked"); role targets fan
+// out to the department pool exactly as before. Someone hit both ways —
+// named, and also holding a directed role — gets only the direct one: the
+// named recipients are removed from the role fan-out by id before either
+// send. Two sends rather than one so each body says why it reached them.
+export async function notifyQueryRaised(
+  actorId: string,
+  actorRole: Role,
+  requestId: string,
+  directedAt: Role[],
+  question: string,
+  directedUserIds: string[] = [],
+): Promise<string[]> {
+  const namedIds = [...new Set(directedUserIds)].filter((id) => id !== actorId);
+
+  const result = await withGrantScope(actorId, actorRole, async (tx) => {
+    const ctx = await loadContext(tx, requestId);
+    if (!ctx) return null;
+    const named = await emailsForIds(tx, namedIds);
+    const pool = directedAt.length > 0 ? await recipientsWithRoles(tx, actorId, directedAt, ctx.departmentId, ctx.companyId) : [];
+    const alreadyNamed = new Set(named.map((r) => r.id));
+    return { ctx, named, pool: pool.filter((r) => !alreadyNamed.has(r.id)) };
+  });
+  if (!result) return [];
+
+  const { ctx, named, pool } = result;
+  await Promise.all([
+    sendEmail({ to: named.map((r) => r.email), subject: "You were asked a question", text: `${subjectLine(ctx)} has a question for you:\n\n${question}` }),
+    sendEmail({ to: pool.map((r) => r.email), subject: "A question needs an answer", text: `${subjectLine(ctx)} has an open question:\n\n${question}` }),
+  ]);
+  return [...named, ...pool].map((r) => r.email);
 }
 
 export function notifyQueryAnswered(actorId: string, actorRole: Role, requestId: string, raisedBy: string, answer: string): Promise<string[]> {

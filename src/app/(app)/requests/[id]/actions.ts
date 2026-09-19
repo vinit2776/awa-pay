@@ -234,13 +234,16 @@ export async function withdrawAction(requestId: string): Promise<TransitionResul
   return afterTransition(requestId, await withdrawRequest(session.userId, requestId, meta));
 }
 
-export async function raiseQueryAction(requestId: string, input: { directedAt: Role[]; question: string }): Promise<QueryResult> {
+export async function raiseQueryAction(
+  requestId: string,
+  input: { directedAt: Role[]; directedUserIds: string[]; question: string },
+): Promise<QueryResult> {
   const session = await verifySession();
   const meta = await getClientMeta();
   const result = await raiseQuery(session.userId, requestId, input, meta);
   if (result.ok) {
     revalidatePath(`/requests/${requestId}`);
-    after(() => notifyQueryRaised(session.userId, result.role, requestId, input.directedAt, input.question));
+    after(() => notifyQueryRaised(session.userId, result.role, requestId, result.directedAt, input.question, result.directedUserIds));
   }
   return result;
 }
