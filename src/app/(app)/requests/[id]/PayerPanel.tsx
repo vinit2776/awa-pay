@@ -32,13 +32,24 @@ export function PayerPanel({
   bankAccountsJson,
   readiness,
   billAmountMinor,
+  suggestedAmountMinor,
+  balanceMinor,
   currency,
+  invoiceIsIn,
 }: {
   requestId: string;
   bankAccountsJson: unknown;
   readiness: PaymentBankReadiness;
   billAmountMinor: number;
+  // What to pay next (an advance's asked-for amount, a part-payment's first
+  // part, or the balance) and the balance overall. The server enforces the
+  // ceiling either way; these only save the payer from typing it wrong.
+  suggestedAmountMinor: number;
+  balanceMinor: number;
   currency: string;
+  // False for an advance still waiting on its tax invoice: paying it can't
+  // close the request, whatever the amount.
+  invoiceIsIn: boolean;
 }) {
   const router = useRouter();
   const accounts = parseBankAccounts(bankAccountsJson);
@@ -46,7 +57,7 @@ export function PayerPanel({
   const [accountId, setAccountId] = useState(accounts[0]?.id ?? "");
   const [paymentMode, setPaymentMode] = useState<PaymentMode>("neft");
   const [valueDate, setValueDate] = useState(() => new Date().toISOString().slice(0, 10));
-  const [amount, setAmount] = useState("");
+  const [amount, setAmount] = useState(() => (suggestedAmountMinor > 0 ? (suggestedAmountMinor / 100).toFixed(2) : ""));
   const [tds, setTds] = useState("0");
   const [reference, setReference] = useState("");
   const [reason, setReason] = useState("");
@@ -211,10 +222,6 @@ export function PayerPanel({
 
   // ---- Step 2: record what was paid outside the system ----
 
-  const tdsMinor = parseAmountToMinor(tds) ?? 0;
-  const netMinor = billAmountMinor - tdsMinor;
-  const amountMinor = parseAmountToMinor(amount);
-
   if (returning) {
     return (
       <div className="flex flex-col gap-3">
@@ -242,18 +249,35 @@ export function PayerPanel({
     );
   }
 
+  const paidMinor = billAmountMinor - balanceMinor;
+  const typedMinor = parseAmountToMinor(amount);
+  const tdsMinor = parseAmountToMinor(tds) ?? 0;
+  // Say what the button will actually do: only a payment that clears the
+  // balance once the invoice is in closes the request.
+  const amountText = typedMinor === null ? "" : ` of ${formatMinorUnits(typedMinor, currency)}`;
+  const payLabel = !invoiceIsIn
+    ? `Record advance${amountText}`
+    : typedMinor === balanceMinor
+      ? `Record ${formatMinorUnits(balanceMinor, currency)} and close`
+      : `Record part payment${amountText}`;
+
   return (
     <div className="flex flex-col gap-3">
       {errorLine}
 
+      {/* The settlement ledger: what is owed, what has moved, what's due.
+          Balance is derived server-side; payRequest enforces the ceiling. */}
       <dl className="grid grid-cols-[minmax(0,1fr)_auto] gap-y-1 rounded-lg border border-line-soft bg-sunk p-3 text-[13px]">
-        <dt className="text-ink-2">Bill amount</dt>
+        <dt className="text-ink-2">{invoiceIsIn ? "Bill amount" : "Quoted amount"}</dt>
         <dd className="m-0 text-right font-mono tabular-nums">{formatMinorUnits(billAmountMinor, currency)}</dd>
-        <dt className="text-ink-2">TDS to deduct</dt>
-        <dd className="m-0 text-right font-mono tabular-nums">− {formatMinorUnits(tdsMinor, currency)}</dd>
-        <dt className="border-t border-line pt-1 font-semibold">Payable</dt>
-        <dd className="m-0 border-t border-line pt-1 text-right font-mono font-semibold tabular-nums">{formatMinorUnits(netMinor, currency)}</dd>
+        <dt className="text-ink-2">Paid so far</dt>
+        <dd className="m-0 text-right font-mono tabular-nums">− {formatMinorUnits(paidMinor, currency)}</dd>
+        <dt className="border-t border-line pt-1 font-semibold">Balance due</dt>
+        <dd className="m-0 border-t border-line pt-1 text-right font-mono font-semibold tabular-nums">{formatMinorUnits(balanceMinor, currency)}</dd>
       </dl>
+      {!invoiceIsIn && (
+        <p className="text-xs text-ink-2">This is an advance. Paying it can&apos;t close the request — that waits for the tax invoice.</p>
+      )}
 
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="flex flex-col gap-1">
@@ -305,13 +329,14 @@ export function PayerPanel({
           <label htmlFor="pay-amount" className={labelClass}>
             Amount paid
           </label>
-          {netMinor > 0 && amountMinor !== netMinor && (
-            <button type="button" onClick={() => setAmount((netMinor / 100).toFixed(2))} className="text-xs text-accent hover:underline">
-              Use {formatMinorUnits(netMinor, currency)}
+          {suggestedAmountMinor > 0 && typedMinor !== suggestedAmountMinor && (
+            <button type="button" onClick={() => setAmount((suggestedAmountMinor / 100).toFixed(2))} className="text-xs text-accent hover:underline">
+              Use {formatMinorUnits(suggestedAmountMinor, currency)}
             </button>
           )}
         </div>
         <input id="pay-amount" type="text" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" className={`${inputClass} font-mono text-lg tabular-nums`} />
+        <span className="text-xs text-ink-3">A payment can&apos;t take the total above what this request can settle.</span>
       </div>
 
       <div className="flex flex-col gap-1">
@@ -338,20 +363,20 @@ export function PayerPanel({
 
       <button
         type="button"
-        disabled={pending || uploading || !reference.trim() || !accountId || amountMinor === null}
+        disabled={pending || uploading || !reference.trim() || !accountId || typedMinor === null}
         onClick={() => {
           const account = accounts.find((a) => a.id === accountId);
-          if (!account || amountMinor === null) {
+          if (!account || typedMinor === null) {
             setError("Enter a valid amount.");
             return;
           }
           void run(() =>
-            payAction(requestId, { fromAccount: account, mode: paymentMode, valueDate, amountMinor, tdsMinor, reference, advice: advice ?? undefined }),
+            payAction(requestId, { fromAccount: account, mode: paymentMode, valueDate, amountMinor: typedMinor, tdsMinor, reference, advice: advice ?? undefined }),
           );
         }}
         className={buttonClass("primary", "md", true)}
       >
-        {amountMinor === null ? "Record payment" : `Record payment of ${formatMinorUnits(amountMinor, currency)}`}
+        {payLabel}
       </button>
       <button type="button" onClick={() => setReturning(true)} className={`${buttonClass("secondary", "sm")} self-start`}>
         Return to accounts…

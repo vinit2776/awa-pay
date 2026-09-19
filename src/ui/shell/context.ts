@@ -1,5 +1,5 @@
 import "server-only";
-import { and, arrayContains, count, eq, isNull } from "drizzle-orm";
+import { and, arrayContains, count, eq, inArray, isNull } from "drizzle-orm";
 import { cache } from "react";
 import { getCurrentUser } from "@/auth/dal";
 import { getActiveRoleGrants } from "@/auth/roles";
@@ -53,14 +53,15 @@ async function loadNavCounts(userId: string, roles: ReadonlySet<string>): Promis
   return counts;
 }
 
-// "Needs you" for a requester: bills returned to them (stage raised) plus
-// bills with an open query directed at the requester role.
+// "Needs you" for a requester: the stages the requester owns
+// (STAGE_OWNER_ROLE — a bill returned to them, or an advance waiting for
+// its invoice) plus bills with an open query directed at the requester.
 async function countNeedsRequester(userId: string): Promise<number> {
   return withGrantScope(userId, "requester", async (tx) => {
     const returned = await tx
       .select({ id: request.id })
       .from(request)
-      .where(and(eq(request.raisedBy, userId), eq(request.stage, "raised")));
+      .where(and(eq(request.raisedBy, userId), inArray(request.stage, ["raised", "awaiting_invoice"])));
     const queried = await tx
       .selectDistinct({ id: query.requestId })
       .from(query)
