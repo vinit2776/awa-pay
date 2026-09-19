@@ -3,14 +3,15 @@ import { eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { hashSecret } from "../src/auth/password";
 import { closeOwnerConnection, dbOwner } from "../scripts/db-owner";
-import { dbIdentity, requireTestUrls } from "../scripts/dbTarget";
+import { dbIdentity, requireTestUrls, testDatabaseConfig } from "../scripts/dbTarget";
 import { cleanupFixturesForNonce, findFixtures } from "../scripts/fixtures";
 import { comment, company, department, duplicateCheck, headOfAccount, request, roleGrant, user, vendor } from "../src/db/schema";
 
 // Gate for the test-isolation machinery itself: the nonce-based fixture
 // cleanup every other test file's afterAll now depends on, and the guard
-// that keeps the suite off the dev database. Runs against the test
-// database like everything else here.
+// that keeps an isolated test database off the dev one. Runs against
+// whichever database the suite is pointed at; the guard cases that need a
+// configured test database are skipped when there isn't one.
 
 const familyNonce = randomUUID().slice(0, 8);
 const entangledNonce = randomUUID().slice(0, 8);
@@ -118,6 +119,8 @@ describe("fixture cleanup (nonce-based purge)", () => {
   });
 });
 
+const isolated = testDatabaseConfig() === "isolated";
+
 describe("test-database isolation guard", () => {
   it("identifies a Supabase project by ref across pooler and direct URLs, and different projects as different", () => {
     const pooledRuntime = "postgres://app_runtime.abcdefgh:pw@aws-0-ap-south-1.pooler.supabase.com:6543/postgres";
@@ -129,7 +132,7 @@ describe("test-database isolation guard", () => {
     expect(dbIdentity(pooledRuntime)).not.toBe(dbIdentity(other));
   });
 
-  it("refuses to run when a test URL names the same database as a dev URL, even with a different password or role", () => {
+  it.skipIf(!isolated)("refuses to run when a test URL names the same database as a dev URL, even with a different password or role", () => {
     // setup.ts has already parked the real dev values and pointed
     // DATABASE_URL at the test database, so the parked snapshot is what a
     // dev URL looks like from in here — swap it for one that is the test
@@ -159,7 +162,25 @@ describe("test-database isolation guard", () => {
       delete process.env.DATABASE_URL_TEST;
       expect(() => requireTestUrls()).toThrow(/DATABASE_URL_TEST not set/);
     } finally {
-      process.env.DATABASE_URL_TEST = saved;
+      if (saved === undefined) delete process.env.DATABASE_URL_TEST;
+      else process.env.DATABASE_URL_TEST = saved;
+    }
+  });
+
+  it("treats exactly one of the two test variables as a misconfiguration, not a fallback", () => {
+    const savedRuntime = process.env.DATABASE_URL_TEST;
+    const savedOwner = process.env.DATABASE_URL_MIGRATIONS_TEST;
+    try {
+      process.env.DATABASE_URL_TEST = "postgres://x@localhost:1/x";
+      delete process.env.DATABASE_URL_MIGRATIONS_TEST;
+      expect(() => testDatabaseConfig()).toThrow(/Only DATABASE_URL_TEST is set/);
+      delete process.env.DATABASE_URL_TEST;
+      expect(testDatabaseConfig()).toBe("shared-with-dev");
+    } finally {
+      for (const [k, v] of [["DATABASE_URL_TEST", savedRuntime], ["DATABASE_URL_MIGRATIONS_TEST", savedOwner]] as const) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
     }
   });
 });

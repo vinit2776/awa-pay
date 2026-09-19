@@ -1,64 +1,33 @@
-# The test database
+# Test fixtures and the test database
 
-`npm test` creates and deletes real rows — users, departments, requests, payments — through the real runtime role and RLS, with no mocks. That is deliberate (the isolation gate is only worth anything against real Postgres), but it means the suite must never share a database with the dev server or with manual walkthroughs.
+`npm test` creates and deletes real rows — users, departments, requests, payments — through the real runtime role and RLS, with no mocks. By default it does that in the **dev database**, the same one the dev server and manual walkthroughs use. That is acceptable while there is no real data, but it has a cost worth knowing about, and this doc describes what guards against it.
 
-It used to. A fixture user left behind by a crashed run (`desks-test-accountant-…@example.invalid`, still holding an *active* accountant grant) is indistinguishable from a real accountant to `src/notifications/recipients.ts`. With a live `RESEND_API_KEY` in dev, approving a request would have mailed dead addresses. The suite now has its own database, refuses to start without it, and cleans up after itself in a way that cannot quietly leave grants behind.
+## The problem this addresses
 
-## One-time setup (needs a person — new project, new credentials)
+A fixture user left behind by a crashed run (`desks-test-accountant-…@example.invalid`, still holding an *active* accountant grant) is indistinguishable from a real accountant to `src/notifications/recipients.ts`. With a live `RESEND_API_KEY` in dev, approving a request would mail dead addresses. Fixtures were leaking because each test file's hand-written delete list rotted: new tables (`duplicate_check`, `extraction_attempt`, …) never got added, the first foreign-key error aborted the rest, and the `role_grant` delete sat after the fragile steps.
 
-1. **Create a second Supabase project**, e.g. `awa-pay-test`, region `ap-south-1`. The free plan allows two active projects. No data of value ever goes in it.
-2. **Create the runtime role**, exactly as phase 0 did for the dev project (SQL editor, as the project's `postgres` owner):
+## What guards against it now
 
-   ```sql
-   create role app_runtime login password '<generate one>';
-   grant connect on database postgres to app_runtime;
-   grant usage on schema public to app_runtime;
-   ```
+1. **Undeliverable recipients are dropped before sending** (`src/notifications/recipientFilter.ts`, applied in `sendEmail`). Addresses on the domains RFC 2606 reserves — `.invalid`, `.test`, `.example`, `.localhost`, `example.com/.net/.org` — can never be delivered, so fixtures and the `@awa-pay.test` walkthrough accounts cost no send and no bounce, whatever is in the database. Each drop is logged, not silent. (Consequence: walkthrough accounts receive no email either; that mail could only ever bounce.)
+2. **Tests cannot send mail.** `tests/setup.ts` deletes `RESEND_API_KEY` from the test process (AGENTS.md rule 4). Before this, a real key in `.env.local` meant `notifications.test.ts` really sent mail to `*.example.invalid`.
+3. **Cleanup that cannot quietly leave grants behind.** Every fixture a test creates carries the file's 8-hex-character nonce — in user emails (`…-<nonce>@example.invalid`) and in department, company, head and vendor names/codes. Each file's `afterAll` calls `cleanupFixturesForNonce(dbOwner, nonce)` (`scripts/fixtures.ts`), which:
+   - finds everything belonging to that nonce **by name, not by ids held in memory**, so it still works if `beforeAll` died half-way;
+   - **revokes the fixture users' grants and deletes their sessions first, as its own committed statement** — so even if everything after it fails, they can't be notification recipients;
+   - deletes every dependent row in foreign-key order inside one transaction (all-or-nothing);
+   - verifies nothing is left, and **throws** if anything is, naming the nonce and the command to clear it.
 
-   Migrations grant `app_runtime` everything else, table by table.
-3. **Put two connection strings in `.env.local`** — same shapes as `DATABASE_URL` / `DATABASE_URL_MIGRATIONS`, pointing at the *test* project:
-
-   ```
-   DATABASE_URL_TEST=            # app_runtime, transaction pooler (6543)
-   DATABASE_URL_MIGRATIONS_TEST= # postgres (owner), session pooler (5432) or direct
-   ```
-4. **Migrate it:** `npm run db:migrate:test` (idempotent; safe to re-run).
-5. **CI:** add the same two values as GitHub Actions secrets named `DATABASE_URL_TEST` and `DATABASE_URL_MIGRATIONS_TEST`. `.github/workflows/ci.yml` uses only these — CI no longer needs the dev project's database secrets, and they can be removed from the repository's secrets once this has merged.
-
-## Why `db:migrate:test` and not `drizzle-kit migrate`
-
-On an empty database `drizzle-kit migrate` applies every migration in **one transaction**. Migration `0009` adds the enum value `request_stage = 'withdrawn'`, which later migrations use, and Postgres refuses to use a new enum value inside the transaction that added it (`unsafe use of new value "withdrawn"`). The dev database never hit this because it was migrated one slice at a time. `scripts/migrate-test.ts` applies each migration in its own transaction and records it in drizzle's own `__drizzle_migrations` table, so the two tools agree about what has been applied. The same limitation will bite the first production bootstrap — worth remembering then.
-
-## What the guard does
-
-`tests/setup.ts` runs before every test file and throws — failing the whole run — if:
-
-- `DATABASE_URL_TEST` or `DATABASE_URL_MIGRATIONS_TEST` is unset (there is no fallback to the dev URLs), or
-- either names the same database as `DATABASE_URL` / `DATABASE_URL_MIGRATIONS`. Databases are compared by Supabase project ref (`role.<ref>` in a pooler username, `db.<ref>.supabase.co` for direct), so a different password, role or port does not disguise the dev project.
-
-`scripts/db-owner.ts` independently resolves to the test owner URL under Vitest, so the owner client cannot reach dev even if the setup file were bypassed. `setup.ts` also deletes `RESEND_API_KEY` from the test process (AGENTS.md rule 4) — before this, a real key in `.env.local` meant `notifications.test.ts` really sent mail to `*.example.invalid`.
-
-## How test cleanup works now
-
-Every fixture a test creates carries the file's 8-hex-character nonce — in user emails (`…-<nonce>@example.invalid`) and in department, company, head and vendor names/codes. Each file's `afterAll` calls `cleanupFixturesForNonce(dbOwner, nonce)` (`scripts/fixtures.ts`), which:
-
-1. finds everything belonging to that nonce **by name, not by ids held in memory** — so it still works if `beforeAll` died half-way and no ids were ever assigned;
-2. **revokes the fixture users' grants and deletes their sessions first, as its own committed statement** — the part that matters for notifications happens even if everything after it fails;
-3. deletes every dependent row in foreign-key order inside one transaction (all-or-nothing);
-4. verifies nothing is left, and **throws** if anything is, with the nonce and the command to clear it.
-
-The old per-file delete lists rotted: new tables (`duplicate_check`, `extraction_attempt`, …) never got added, the first foreign-key error aborted the rest, and the `role_grant` delete sat after the fragile ones — which is how 24 fixture users came to hold active grants in dev. Adding a table that a fixture can touch now means one edit in `scripts/fixtures.ts`, and `tests/fixtures.test.ts` covers the mechanism itself.
+   Adding a table a fixture can touch now means one edit in `scripts/fixtures.ts`. `tests/fixtures.test.ts` covers the mechanism.
+4. **A loud warning every run** when the suite is using the dev database.
 
 ## Sweeping stale fixtures — `npm run db:cleanup-fixtures`
 
-For runs that never reached `afterAll` (Ctrl-C, a killed CI job, a crash) and for the pre-existing pile in dev. **Dry run by default**:
+For runs that never reached `afterAll` (Ctrl-C, a killed CI job, a crash) and for any pre-existing pile. **Dry run by default**:
 
 ```bash
 npm run db:cleanup-fixtures                       # dev database, dry run
-npm run db:cleanup-fixtures -- --target test      # test database, dry run
 ```
 
-It lists every matched user (with its active-grant count), department, company, head and vendor, and the requests in fixture departments. It then executes the real delete statements inside a transaction that it **rolls back**, and prints the per-table row counts — so what you see is what `--apply` will do, and any foreign key pointing in from real data shows up before anything is committed.
+It lists every matched user (with its active-grant count), department, company, head and vendor, and the requests in fixture departments. It then executes the real delete statements inside a transaction that it **rolls back**, and prints per-table row counts — so what you see is what `--apply` will do, and any foreign key pointing in from real data shows up before anything is committed.
 
 ```bash
 npm run db:cleanup-fixtures -- --revoke-only      # stop the bleeding: revoke grants + drop sessions, delete nothing
@@ -66,10 +35,17 @@ npm run db:cleanup-fixtures -- --apply            # revoke, then delete everythi
 ```
 
 - **What matches** is only the naming convention above. Nothing else is selected: not `*@awa-pay.test`, not the `phase*-…`/`wt-…`/`demo`/`approver`/`accountant`/`payer` walkthrough users, not their departments, companies, heads, vendors or requests. A user matching `@awa-pay.test` aborts the run outright.
-- **`--min-age-minutes N`** (default 60) skips a whole fixture family (one nonce = one test run) if its *newest* row is younger than N minutes, so a run in progress is not swept from under itself. `--min-age-minutes 0` disables that — only use it when no test run is active.
+- **`--min-age-minutes N`** (default 60) skips a whole fixture family (one nonce = one test run) if its *newest* row is younger than N minutes, so a run in progress is not swept from under itself. Because tests share the dev database by default, other people's runs may be in progress: use `--min-age-minutes 0` only when you know nothing is running.
 - **All-or-nothing.** If a request outside any fixture department references fixture data, or Postgres refuses a delete, the run stops with the constraint named and changes nothing. `--revoke-only` is the one exception by design: it commits.
-- Vendors and requests are deleted, not archived. The `event` trail rows of *fixture* requests go with them; events of real requests are never touched.
 
-## Not isolated (yet)
+## Optional: a separate test database
 
-Tests still upload small files to the real R2 bucket (`presignPutUrl`), and that bucket is object-locked, so those objects cannot be removed. A separate test bucket with a short retention would fix it; it was left out of this change because it needs a new bucket and token, not code.
+Not required. To take tests off the dev database entirely, provision another Postgres with the same two-role shape (a second Supabase project, a local Postgres, or a container), set **both** `DATABASE_URL_TEST` (restricted `app_runtime` role) and `DATABASE_URL_MIGRATIONS_TEST` (owner) in `.env.local`, and run `npm run db:migrate:test`. The suite then uses it and **refuses to start** if either URL names the same database as the dev URLs (compared by Supabase project ref, so a different password or port does not disguise it). Setting only one of the two is an error, never a fallback. `npm run db:cleanup-fixtures -- --target test` sweeps it.
+
+The role setup is the same as phase 0: `create role app_runtime login password '…'; grant connect on database <db> to app_runtime; grant usage on schema public to app_runtime;` — migrations grant the rest.
+
+**Use `db:migrate:test`, not `drizzle-kit migrate`, on an empty database.** `drizzle-kit migrate` applies everything in one transaction, and migration `0009` adds the enum value `request_stage = 'withdrawn'` which later migrations use; Postgres refuses (`unsafe use of new value "withdrawn"`). `scripts/migrate-test.ts` commits each migration separately and records it in drizzle's own table. The first production bootstrap will hit the same limit.
+
+## Not isolated
+
+Tests upload small files to the real R2 bucket (`presignPutUrl`), and that bucket is object-locked, so those objects cannot be removed. A separate test bucket with short retention would fix it; it needs a new bucket and token, not code.

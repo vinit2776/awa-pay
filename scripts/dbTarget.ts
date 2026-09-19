@@ -1,14 +1,12 @@
 // Which database a script or the test suite talks to, decided in one place.
 //
-// The vitest suite used to run against the same Supabase project the dev
-// server and manual walkthroughs use, so fixture users (and any grants a
-// crashed run left behind) showed up in the dev app's queues and
-// notification recipient lists. Tests now require their own database —
-// DATABASE_URL_TEST (restricted runtime role) and
-// DATABASE_URL_MIGRATIONS_TEST (owner role) — and refuse to start if
-// either is missing or points at the same database as the dev URLs. There
-// is deliberately no fallback to the dev URLs: an unset variable is a hard
-// failure, not a silent return to the shared database.
+// The vitest suite has always run against the dev database. A separate test
+// database is OPTIONAL: set DATABASE_URL_TEST (restricted runtime role) and
+// DATABASE_URL_MIGRATIONS_TEST (owner role) and the suite uses it, refusing
+// to start if either names the same database as the dev URLs. Set neither
+// and the suite runs against dev with a loud warning (tests/setup.ts). Set
+// only one and it fails — a half-configured isolation is a mistake, never a
+// quiet fallback.
 //
 // Lives in scripts/, not src/: application code must never see the owner
 // connection (AGENTS.md rule 1), and this module names both.
@@ -18,13 +16,33 @@ config({ path: ".env.local" });
 
 export type DbTarget = "dev" | "test";
 
+export type TestDatabaseConfig = "isolated" | "shared-with-dev";
+
 /**
- * Vitest sets VITEST (and NODE_ENV=test). DB_TARGET=test is the explicit
- * opt-in for scripts and drizzle-kit (npm run db:migrate:test,
- * db:cleanup-fixtures -- --target test). Everything else is dev.
+ * Whether a separate test database is configured. Throws if exactly one of
+ * the two variables is set.
+ */
+export function testDatabaseConfig(): TestDatabaseConfig {
+  const runtime = process.env.DATABASE_URL_TEST;
+  const owner = process.env.DATABASE_URL_MIGRATIONS_TEST;
+  if (runtime && owner) return "isolated";
+  if (!runtime && !owner) return "shared-with-dev";
+  throw new Error(
+    `Only ${runtime ? "DATABASE_URL_TEST" : "DATABASE_URL_MIGRATIONS_TEST"} is set. Set both to isolate the test suite, or neither to run it against the dev database.`,
+  );
+}
+
+/**
+ * Under vitest (VITEST / NODE_ENV=test) the owner client follows the test
+ * database when one is configured, otherwise dev. DB_TARGET=test is the
+ * explicit opt-in for scripts (db:migrate:test, db:cleanup-fixtures
+ * --target test) and always requires the test variables. Everything else is
+ * dev.
  */
 export function currentTarget(): DbTarget {
-  if (process.env.VITEST || process.env.NODE_ENV === "test") return "test";
+  if (process.env.VITEST || process.env.NODE_ENV === "test") {
+    return testDatabaseConfig() === "isolated" ? "test" : "dev";
+  }
   return process.env.DB_TARGET === "test" ? "test" : "dev";
 }
 
