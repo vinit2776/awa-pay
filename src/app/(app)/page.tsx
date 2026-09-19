@@ -1,13 +1,11 @@
 import Link from "next/link";
-import { getCurrentUser } from "@/auth/dal";
-import { withActorScope } from "@/db/runtime";
-import { getActiveRoleGrants } from "@/auth/roles";
+import { getViewer } from "@/auth/dal";
 import { logout } from "./actions";
 
 export default async function Home() {
-  const currentUser = await getCurrentUser();
-  const grants = currentUser ? await withActorScope(currentUser.id, (tx) => getActiveRoleGrants(tx, currentUser.id)) : [];
-  const roles = new Set(grants.map((g) => g.role));
+  const viewer = await getViewer();
+  const currentUser = viewer?.user ?? null;
+  const roles = viewer?.roles ?? new Set<never>();
 
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-4 px-4 text-center">

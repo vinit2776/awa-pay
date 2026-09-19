@@ -1,10 +1,10 @@
 import { and, eq, sql } from "drizzle-orm";
-import { type Role, withGrantScope } from "@/db/runtime";
+import { type Role, withViewerRole } from "@/db/runtime";
 import { nudge } from "@/db/schema";
 import { appendEvent, type Meta } from "@/events/append";
 import { lockRequestMutex } from "@/requests/lock";
 import { STAGE_OWNER_ROLE } from "@/requests/stageOwner";
-import { resolveViewerRole } from "@/requests/viewerRole";
+import { ROLE_PRIORITY, selectRequestById } from "@/requests/viewerRole";
 import { CONVERSATION_ROLES } from "./roles";
 
 // Pure orchestration, no next/headers — mirrors queriesCore.ts's shape.
@@ -35,21 +35,17 @@ function isUniqueViolation(err: unknown): boolean {
 }
 
 export async function sendNudge(actorId: string, requestId: string, meta: Meta): Promise<NudgeResult> {
-  const resolved = await resolveViewerRole(actorId, requestId);
-  if (!resolved) {
-    return { ok: false, error: "Request not found." };
-  }
-  const { role, request: req } = resolved;
-  if (!CONVERSATION_ROLES.includes(role)) {
-    return { ok: false, error: "This role can't send nudges." };
-  }
+  // Role resolution and the write share one transaction (withViewerRole).
+  const result = await withViewerRole(actorId, ROLE_PRIORITY, selectRequestById(requestId), async (tx, { role, probed: req }): Promise<NudgeResult> => {
+    if (!CONVERSATION_ROLES.includes(role)) {
+      return { ok: false, error: "This role can't send nudges." };
+    }
 
-  const toRole = STAGE_OWNER_ROLE[req.stage];
-  if (!toRole) {
-    return { ok: false, error: "Nothing is waiting on this request." };
-  }
+    const toRole = STAGE_OWNER_ROLE[req.stage];
+    if (!toRole) {
+      return { ok: false, error: "Nothing is waiting on this request." };
+    }
 
-  return withGrantScope(actorId, role, async (tx) => {
     await lockRequestMutex(tx, requestId);
 
     const [already] = await tx
@@ -95,4 +91,5 @@ export async function sendNudge(actorId: string, requestId: string, meta: Meta):
 
     return { ok: true, role, toRole };
   });
+  return result ?? { ok: false, error: "Request not found." };
 }

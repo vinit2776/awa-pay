@@ -11,10 +11,10 @@ import {
   requestStageEnum,
   vendor,
 } from "@/db/schema";
-import { actorHoldsRole, checkDuplicates, recordDuplicateCheck, type DuplicateMatch, type DuplicateVerdict } from "@/duplicates/duplicateCore";
+import { actorHoldsRoleInTx, checkDuplicatesInTx, recordDuplicateCheck, type DuplicateMatch, type DuplicateVerdict } from "@/duplicates/duplicateCore";
 import { appendEvent } from "@/events/append";
 import { headObjectContentLength } from "@/storage/r2";
-import { checkPaymentBankReadiness } from "@/vendors/verifyCore";
+import { readBankReadiness } from "@/vendors/verifyCore";
 
 export type PaymentMode = (typeof paymentModeEnum.enumValues)[number];
 export type HoldSubReason = (typeof holdSubReasonEnum.enumValues)[number];
@@ -89,6 +89,14 @@ async function runTransition(
     | Partial<typeof request.$inferInsert>
     | ((tx: ScopedTx, req: RequestRow) => Partial<typeof request.$inferInsert> | Promise<Partial<typeof request.$inferInsert>>),
   buildAfter: (tx: ScopedTx, req: RequestRow) => Promise<{ objectType: string; objectId: string; after: Record<string, unknown> }>,
+  // Extra checks that must see the locked row and answer before anything is
+  // written (duplicate control at account time, bank readiness at pay
+  // time). Returning a result aborts the transition with it; null lets it
+  // proceed. They run inside this transaction, after the stage checks,
+  // rather than in transactions of their own before it — each of those was
+  // a full scope setup plus commit, and running under the row lock also
+  // narrows the read-then-write window they used to accept.
+  guard?: (tx: ScopedTx, req: RequestRow) => Promise<TransitionResult | null>,
 ): Promise<TransitionResult> {
   const spec = TRANSITIONS[name];
 
@@ -129,6 +137,11 @@ async function runTransition(
 
     if (!spec.fromStages.includes(req.stage)) {
       return { ok: false, error: `This request is no longer in a stage "${name}" can act on.` };
+    }
+
+    if (guard) {
+      const blocked = await guard(tx, req);
+      if (blocked) return blocked;
     }
 
     const resolvedPatch = typeof patch === "function" ? await patch(tx, req) : patch;
@@ -278,37 +291,16 @@ export async function accountRequest(
   // vendor+invoice+FY is computable at all — invoiceKey/fy already exist
   // on the request row (generated at capture), but vendor_key only lands
   // once a vendor is actually matched, which is what this very transition
-  // is about to do. A read-before-write pre-check, same shape as
-  // payRequest's own bank-readiness gate — the narrow race window it
-  // accepts is not the real enforcement boundary; request's own
-  // one_payment_per_invoice partial unique index is.
-  const [current] = await withGrantScope(actorId, "accountant", (tx) =>
-    tx.select({ invoiceKey: request.invoiceKey, fy: request.fy }).from(request).where(eq(request.id, requestId)).limit(1),
-  );
-  const [matchedVendorForCheck] = await withGrantScope(actorId, "accountant", (tx) =>
-    tx.select({ vendorKey: vendor.vendorKey }).from(vendor).where(eq(vendor.id, params.vendorId)).limit(1),
-  );
-
-  const duplicateResult =
-    current?.invoiceKey && current.fy && matchedVendorForCheck?.vendorKey
-      ? await checkDuplicates(actorId, "accountant", {
-          excludeRequestId: requestId,
-          vendorKey: matchedVendorForCheck.vendorKey,
-          invoiceKey: current.invoiceKey,
-          fy: current.fy,
-        })
-      : { verdict: "none" as const, match: null };
-
+  // is about to do. It runs as runTransition's guard, inside the same
+  // transaction and under the request's row lock, so the vendor lookup, the
+  // duplicate search, the super-admin check and the transition itself share
+  // one scope instead of each opening their own. Still a read-before-write
+  // pre-check — the narrow race window it accepts is not the real
+  // enforcement boundary; request's own one_payment_per_invoice partial
+  // unique index is.
+  let matchedVendorKey: string | null = null;
+  let duplicateResult: { verdict: DuplicateVerdict; match: DuplicateMatch | null } = { verdict: "none", match: null };
   let override: { by: string; reason: string } | null = null;
-  if (duplicateResult.verdict === "blocked_paid" && duplicateResult.match) {
-    if (!params.overrideDuplicate) {
-      return { ok: false, error: "This vendor and invoice number were already paid on another request.", duplicate: { match: duplicateResult.match, verdict: duplicateResult.verdict } };
-    }
-    if (!(await actorHoldsRole(actorId, "super_admin"))) {
-      return { ok: false, error: "Only a super admin can override an already-paid vendor+invoice match.", duplicate: { match: duplicateResult.match, verdict: duplicateResult.verdict } };
-    }
-    override = { by: actorId, reason: params.overrideDuplicate.reason };
-  }
 
   return runTransition(
     actorId,
@@ -319,12 +311,11 @@ export async function accountRequest(
     // vendorKey is resolved from the matched vendor's own generated
     // column, not recomputed here — it must land in this same combined
     // UPDATE (see runTransition's own comment on why one UPDATE, not two).
-    async (tx: ScopedTx) => {
-      const [matchedVendor] = await tx.select({ vendorKey: vendor.vendorKey }).from(vendor).where(eq(vendor.id, params.vendorId)).limit(1);
-      if (!matchedVendor) {
+    async () => {
+      if (!matchedVendorKey) {
         throw new Error("Vendor not found.");
       }
-      return { companyId: params.companyId, vendorKey: matchedVendor.vendorKey } satisfies Partial<typeof request.$inferInsert>;
+      return { companyId: params.companyId, vendorKey: matchedVendorKey } satisfies Partial<typeof request.$inferInsert>;
     },
     async (tx) => {
       const [row] = await tx
@@ -349,6 +340,30 @@ export async function accountRequest(
         objectId: row.id,
         after: { companyId: params.companyId, vendorId: params.vendorId, headId: params.headId, voucherNo: params.voucherNo, bookedOn: params.bookedOn },
       };
+    },
+    async (tx, req) => {
+      const [matchedVendor] = await tx.select({ vendorKey: vendor.vendorKey }).from(vendor).where(eq(vendor.id, params.vendorId)).limit(1);
+      matchedVendorKey = matchedVendor?.vendorKey ?? null;
+
+      if (req.invoiceKey && req.fy && matchedVendorKey) {
+        duplicateResult = await checkDuplicatesInTx(tx, {
+          excludeRequestId: requestId,
+          vendorKey: matchedVendorKey,
+          invoiceKey: req.invoiceKey,
+          fy: req.fy,
+        });
+      }
+
+      if (duplicateResult.verdict === "blocked_paid" && duplicateResult.match) {
+        if (!params.overrideDuplicate) {
+          return { ok: false, error: "This vendor and invoice number were already paid on another request.", duplicate: { match: duplicateResult.match, verdict: duplicateResult.verdict } };
+        }
+        if (!(await actorHoldsRoleInTx(tx, actorId, "super_admin"))) {
+          return { ok: false, error: "Only a super admin can override an already-paid vendor+invoice match.", duplicate: { match: duplicateResult.match, verdict: duplicateResult.verdict } };
+        }
+        override = { by: actorId, reason: params.overrideDuplicate.reason };
+      }
+      return null;
     },
   );
 }
@@ -389,28 +404,6 @@ export async function payRequest(
   if (params.amountMinor <= 0) return { ok: false, error: "Enter a valid amount." };
   if (params.tdsMinor < 0) return { ok: false, error: "TDS cannot be negative." };
 
-  // The payer-verification gate (phase 10). One live read, no per-request
-  // cached flag — checkPaymentBankReadiness resolves the vendor's CURRENT
-  // bank row fresh on every call, which is the entire mechanism behind "a
-  // bank change flags every open request for this vendor": the moment any
-  // vendor_bank row is superseded, the new row's verified_at starts null,
-  // so the very next payRequest attempt on ANY open request for that
-  // vendor re-triggers this gate automatically — see
-  // src/vendors/verifyCore.ts. Checked before the row lock below, same as
-  // the advice-file corroboration right after it — a narrow, accepted race
-  // window (the same shape that check already lives with), not the actual
-  // enforcement boundary (that's the RLS-gated UPDATE itself).
-  const readiness = await checkPaymentBankReadiness(actorId, requestId);
-  if (!readiness.ready) {
-    if (readiness.reason === "no_vendor") {
-      return { ok: false, error: "This request has no accounted vendor — return it to accounts." };
-    }
-    if (readiness.reason === "no_bank") {
-      return { ok: false, error: `No bank details are on file for ${readiness.vendorName} — add bank details before paying.` };
-    }
-    return { ok: false, error: `${readiness.vendorName}'s bank details haven't been verified yet — verify them before paying.` };
-  }
-
   // Same server-side corroboration captureCore.ts uses for a bill's
   // attachment — before opening any transaction, not after.
   if (params.advice) {
@@ -430,48 +423,77 @@ export async function payRequest(
   // boundary, so a caught violation here is the expected, only path to a
   // graceful error, not a fallback for a check that already ran.
   try {
-    return await runTransition(actorId, "pay", requestId, meta, null, {}, async (tx) => {
-      const [row] = await tx
-        .insert(payment)
-        .values({
-          requestId,
-          fromAccount: params.fromAccount,
-          mode: params.mode,
-          valueDate: params.valueDate,
-          amountMinor: params.amountMinor,
-          tdsMinor: params.tdsMinor,
-          reference: params.reference,
-          paidBy: actorId,
-        })
-        .returning({ id: payment.id });
+    return await runTransition(
+      actorId,
+      "pay",
+      requestId,
+      meta,
+      null,
+      {},
+      async (tx) => {
+        const [row] = await tx
+          .insert(payment)
+          .values({
+            requestId,
+            fromAccount: params.fromAccount,
+            mode: params.mode,
+            valueDate: params.valueDate,
+            amountMinor: params.amountMinor,
+            tdsMinor: params.tdsMinor,
+            reference: params.reference,
+            paidBy: actorId,
+          })
+          .returning({ id: payment.id });
 
-      if (params.advice) {
-        await tx.insert(requestFile).values({
-          id: params.advice.fileId,
-          requestId,
-          kind: "payment_advice",
-          storageKey: params.advice.storageKey,
-          mime: params.advice.mime,
-          bytes: params.advice.byteLength,
-          sha256: params.advice.sha256,
-          uploadedBy: actorId,
-        });
-      }
+        if (params.advice) {
+          await tx.insert(requestFile).values({
+            id: params.advice.fileId,
+            requestId,
+            kind: "payment_advice",
+            storageKey: params.advice.storageKey,
+            mime: params.advice.mime,
+            bytes: params.advice.byteLength,
+            sha256: params.advice.sha256,
+            uploadedBy: actorId,
+          });
+        }
 
-      return {
-        objectType: "payment",
-        objectId: row.id,
-        after: {
-          mode: params.mode,
-          valueDate: params.valueDate,
-          amountMinor: params.amountMinor,
-          tdsMinor: params.tdsMinor,
-          reference: params.reference,
-          fromAccountLabel: params.fromAccount.label,
-          hasAdvice: Boolean(params.advice),
-        },
-      };
-    });
+        return {
+          objectType: "payment",
+          objectId: row.id,
+          after: {
+            mode: params.mode,
+            valueDate: params.valueDate,
+            amountMinor: params.amountMinor,
+            tdsMinor: params.tdsMinor,
+            reference: params.reference,
+            fromAccountLabel: params.fromAccount.label,
+            hasAdvice: Boolean(params.advice),
+          },
+        };
+      },
+      // The payer-verification gate (phase 10). One live read, no
+      // per-request cached flag — readBankReadiness resolves the vendor's
+      // CURRENT bank row fresh on every call, which is the entire mechanism
+      // behind "a bank change flags every open request for this vendor":
+      // the moment any vendor_bank row is superseded, the new row's
+      // verified_at starts null, so the very next payRequest attempt on ANY
+      // open request for that vendor re-triggers this gate automatically —
+      // see src/vendors/verifyCore.ts. Runs as runTransition's guard: in the
+      // same transaction and under the request's row lock, not in a separate
+      // transaction ahead of it.
+      async (tx) => {
+        const readiness = await readBankReadiness(tx, requestId);
+        if (readiness.ready) return null;
+        if (readiness.reason === "no_vendor") {
+          return { ok: false, error: "This request has no accounted vendor — return it to accounts." };
+        }
+        if (readiness.reason === "no_bank") {
+          return { ok: false, error: `No bank details are on file for ${readiness.vendorName} — add bank details before paying.` };
+        }
+        return { ok: false, error: `${readiness.vendorName}'s bank details haven't been verified yet — verify them before paying.` };
+      },
+    );
   } catch (err) {
     const constraint = uniqueViolationConstraint(err);
     if (constraint === "payment_reference_unique_idx") {
