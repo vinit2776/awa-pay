@@ -85,8 +85,10 @@ export function renderEventSummary(event: RenderableEvent): EventSummary {
     case "request.withdrawn":
       return { icon: "✕", label: "Withdrawn", detail: "" };
     case "request.query_raised": {
-      const directedAt = Array.isArray(after.directedAt) ? (after.directedAt as string[]).join(" and ") : "";
-      return { icon: "?", label: `Query to ${directedAt}`, detail: str("question") };
+      // Older events carry only directedAt; newer ones also name people.
+      const roles = Array.isArray(after.directedAt) ? (after.directedAt as string[]) : [];
+      const people = Array.isArray(after.directedUsers) ? (after.directedUsers as { name?: string }[]).map((u) => u.name ?? "someone") : [];
+      return { icon: "?", label: `Query to ${[...people, ...roles].join(" and ")}`, detail: str("question") };
     }
     case "request.query_answered":
       return { icon: "✓", label: "Query answered", detail: str("answer") };

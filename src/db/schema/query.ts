@@ -23,10 +23,14 @@ export const query = pgTable(
     raisedAsRole: text("raised_as_role").notNull(),
     // A live-enforced value, not a snapshot: query_update's RLS checks
     // app_actor_role() = ANY(directed_at), so this needs real enum typing.
-    // Roles, not specific user ids — the same department-pool model as
-    // everywhere else in this codebase ("nothing is individually
-    // assigned").
+    // Role targets are the department-pool model as everywhere else in
+    // this codebase; may be empty when the query names people instead.
     directedAt: roleEnum("directed_at").array().notNull(),
+    // Individuals asked by name, alongside or instead of directedAt. Also
+    // live-enforced by query_update (app_actor_id() = ANY(directed_user_ids)).
+    // An array can't carry a foreign key, so queriesCore validates each id
+    // against an active, in-scope grant when the query is raised.
+    directedUserIds: uuid("directed_user_ids").array().notNull().default(sql`'{}'`),
     question: text("question").notNull(),
     answeredBy: uuid("answered_by").references(() => user.id),
     answeredAsRole: text("answered_as_role"),
@@ -37,6 +41,11 @@ export const query = pgTable(
   (table) => [
     index("query_request_id_idx").on(table.requestId),
     index("query_open_idx").on(table.requestId).where(sql`${table.resolvedAt} is null`),
+    // A query is directed at somebody: roles, people, or both.
+    check(
+      "query_directed_check",
+      sql`cardinality(${table.directedAt}) > 0 or cardinality(${table.directedUserIds}) > 0`,
+    ),
     // Either fully unanswered or fully answered — never a half-written row
     // (e.g. answer text with no answeredBy).
     check(

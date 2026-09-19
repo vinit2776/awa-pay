@@ -1,9 +1,10 @@
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { type Role, withGrantScope } from "@/db/runtime";
-import { query } from "@/db/schema";
+import { query, user } from "@/db/schema";
 import { appendEvent, type Meta } from "@/events/append";
 import { lockRequestMutex } from "@/requests/lock";
 import { resolveViewerRole } from "@/requests/viewerRole";
+import { queryTargetsFor } from "./queryTargets";
 import { CONVERSATION_ROLES } from "./roles";
 
 // Pure orchestration, no next/headers — mirrors commentsCore.ts's shape.
@@ -19,25 +20,41 @@ import { CONVERSATION_ROLES } from "./roles";
 // requester acting on a non-'raised'-stage request — traced and fixed as
 // part of phase 7, a real regression from when this file was written).
 
-export type QueryResult = { ok: true; queryId: string; role: Role } | { ok: false; error: string };
+// directedAt / directedUserIds echo what was actually stored (deduplicated,
+// validated), which is what the notification fan-out should be driven by —
+// not the raw client input.
+export type QueryResult =
+  | { ok: true; queryId: string; role: Role; directedAt: Role[]; directedUserIds: string[] }
+  | { ok: false; error: string };
 export type AnswerResult = { ok: true; role: Role; raisedBy: string } | { ok: false; error: string };
 
-export type RaiseQueryParams = { directedAt: Role[]; question: string };
+// A query is aimed at roles (anyone holding one, in scope, may answer),
+// at named people, or both. Named ids come from the client and are only
+// ever treated as claims: raiseQuery resolves them server-side.
+export type RaiseQueryParams = { directedAt: Role[]; directedUserIds?: string[]; question: string };
 
 export async function raiseQuery(actorId: string, requestId: string, params: RaiseQueryParams, meta: Meta): Promise<QueryResult> {
   const question = params.question.trim();
   if (!question) {
     return { ok: false, error: "A question is required." };
   }
-  if (params.directedAt.length === 0) {
+  const directedAt = [...new Set(params.directedAt)];
+  const directedUserIds = [...new Set(params.directedUserIds ?? [])];
+  if (directedAt.length === 0 && directedUserIds.length === 0) {
     return { ok: false, error: "Choose who this is directed at." };
+  }
+  if (directedAt.some((r) => !CONVERSATION_ROLES.includes(r))) {
+    return { ok: false, error: "A query can't be directed at that role." };
+  }
+  if (directedUserIds.includes(actorId)) {
+    return { ok: false, error: "You can't direct a query at yourself." };
   }
 
   const resolved = await resolveViewerRole(actorId, requestId);
   if (!resolved) {
     return { ok: false, error: "Request not found." };
   }
-  const { role } = resolved;
+  const { role, request: req } = resolved;
   if (!CONVERSATION_ROLES.includes(role)) {
     return { ok: false, error: "This role can't raise queries." };
   }
@@ -45,9 +62,22 @@ export async function raiseQuery(actorId: string, requestId: string, params: Rai
   return withGrantScope(actorId, role, async (tx) => {
     await lockRequestMutex(tx, requestId);
 
+    // Each named person must hold an active grant with scope over this
+    // request. Checked here, in the same transaction as the insert, so the
+    // list can't go stale between validation and write; the RLS on answer
+    // re-checks scope live anyway.
+    let directedUsers: { id: string; name: string }[] = [];
+    if (directedUserIds.length > 0) {
+      const eligible = await queryTargetsFor(tx, req);
+      if (directedUserIds.some((id) => !eligible.has(id))) {
+        return { ok: false, error: "You can only direct a query at people who work on this request." };
+      }
+      directedUsers = await tx.select({ id: user.id, name: user.name }).from(user).where(inArray(user.id, directedUserIds));
+    }
+
     const [inserted] = await tx
       .insert(query)
-      .values({ requestId, raisedBy: actorId, raisedAsRole: role, directedAt: params.directedAt, question })
+      .values({ requestId, raisedBy: actorId, raisedAsRole: role, directedAt, directedUserIds, question })
       .returning({ id: query.id });
 
     await appendEvent(
@@ -60,13 +90,15 @@ export async function raiseQuery(actorId: string, requestId: string, params: Rai
         objectType: "query",
         objectId: inserted.id,
         before: {},
-        after: { directedAt: params.directedAt, question },
+        // Names are snapshotted alongside the ids so the trail still reads
+        // right if a person is later renamed or removed.
+        after: { directedAt, directedUserIds, directedUsers, question },
         reason: null,
       },
       meta,
     );
 
-    return { ok: true, queryId: inserted.id, role };
+    return { ok: true, queryId: inserted.id, role, directedAt, directedUserIds };
   });
 }
 
@@ -100,8 +132,11 @@ export async function answerQuery(
     if (q.resolvedAt) {
       return { ok: false, error: "This query has already been answered." };
     }
-    if (!q.directedAt.includes(role)) {
-      return { ok: false, error: "This query isn't directed at your role." };
+    // Same test as query_update's RLS, so the message is the friendly
+    // version of what the policy would otherwise refuse: named, or holding
+    // a role it was aimed at.
+    if (!q.directedAt.includes(role) && !q.directedUserIds.includes(actorId)) {
+      return { ok: false, error: "This query isn't directed at you or your role." };
     }
 
     await tx

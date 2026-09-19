@@ -1,6 +1,8 @@
-import { and, asc, desc, eq, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { queryTargetsFor } from "@/conversation/queryTargets";
+import { DESK_ROLES } from "@/conversation/roles";
 import { withGrantScope } from "@/db/runtime";
 import { accounting, comment, company, department, event, headOfAccount, payment, query, requestFile, user } from "@/db/schema";
 import { renderEventSummary } from "@/events/render";
@@ -16,7 +18,7 @@ import { ApproverPanel } from "./ApproverPanel";
 import { AccountantPanel } from "./AccountantPanel";
 import { ConversationPanel, type ConversationEntry } from "./ConversationPanel";
 import { PayerPanel } from "./PayerPanel";
-import { QueryPanel, type OpenQuery } from "./QueryPanel";
+import { QueryPanel, type OpenQuery, type QueryPerson } from "./QueryPanel";
 import { WithdrawButton } from "./WithdrawButton";
 
 export default async function RequestDetailPage({ params }: PageProps<"/requests/[id]">) {
@@ -29,7 +31,7 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
   }
   const { role, request: req } = resolved;
 
-  const [department_, files, commentAttachments, accountingRows, paymentRow, events, comments, openQueryRows, routedApproverName, flagContext] = await withGrantScope(
+  const [department_, files, commentAttachments, accountingRows, paymentRow, events, comments, openQueryRows, routedApproverName, flagContext, queryTargets] = await withGrantScope(
     session.userId,
     role,
     async (tx) => {
@@ -75,7 +77,12 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
         ? (await tx.select({ name: user.name }).from(user).where(eq(user.id, req.routedApproverId)).limit(1))[0]?.name ?? null
         : null;
       const flagCtx = await loadFlagContext(tx, [req]);
-      return [dept, bills, attachments, accountingHistory, pay ?? null, eventRows, commentRows, openQueries, routedName, flagCtx];
+      const targets = await queryTargetsFor(tx, req);
+      // Names for the picker and for anyone already named on an open query
+      // (who may have since lost their grant, so aren't in `targets`).
+      const nameIds = [...new Set([...targets.keys(), ...openQueries.flatMap(({ query: q }) => q.directedUserIds)])];
+      const targetNames = nameIds.length > 0 ? await tx.select({ id: user.id, name: user.name }).from(user).where(inArray(user.id, nameIds)) : [];
+      return [dept, bills, attachments, accountingHistory, pay ?? null, eventRows, commentRows, openQueries, routedName, flagCtx, { targets, targetNames }];
     },
   );
 
@@ -98,10 +105,29 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
     })),
   );
 
+  // People a query can be aimed at, most relevant first: whoever raised the
+  // bill, then anyone who has already acted on it (the trail), then the rest
+  // of the department's desk holders. Super admins are left out — they
+  // configure, they don't work a request — though raiseQuery would accept
+  // them. The viewer is never offered to themselves.
+  const actedIds = new Set(events.map(({ event: e }) => e.actor).filter((a): a is string => !!a));
+  const nameById = new Map(queryTargets.targetNames.map((u) => [u.id, u.name]));
+  const queryPeople: QueryPerson[] = [...queryTargets.targets.entries()]
+    .map(([id, roles]) => ({
+      id,
+      name: nameById.get(id) ?? "Unknown",
+      roles: roles.filter((r) => DESK_ROLES.includes(r)),
+      raisedThis: id === req.raisedBy,
+      acted: actedIds.has(id),
+    }))
+    .filter((p) => p.id !== session.userId && p.roles.length > 0)
+    .sort((a, b) => Number(b.raisedThis) - Number(a.raisedThis) || Number(b.acted) - Number(a.acted) || a.name.localeCompare(b.name));
+
   const openQueries: OpenQuery[] = openQueryRows.map(({ query: q, raisedByName }) => ({
     id: q.id,
     question: q.question,
     directedAt: q.directedAt,
+    directedUsers: q.directedUserIds.map((id) => ({ id, name: nameById.get(id) ?? "Former user" })),
     raisedByName: raisedByName ?? "Former user",
     at: q.at.toISOString(),
   }));
@@ -239,7 +265,14 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
         </ul>
       </div>
 
-      {role !== "developer" && <QueryPanel requestId={req.id} viewerRole={role} openQueries={openQueries} />}
+      {role !== "developer" && <QueryPanel
+          requestId={req.id}
+          viewerId={session.userId}
+          viewerRole={role}
+          raisedById={req.raisedBy}
+          people={queryPeople}
+          openQueries={openQueries}
+        />}
       {role !== "developer" && <ConversationPanel requestId={req.id} entries={conversationEntries} />}
     </div>
   );
