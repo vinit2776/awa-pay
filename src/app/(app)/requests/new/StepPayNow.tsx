@@ -54,9 +54,9 @@ export function StepPayNow({
         </Field>
 
         {showShare && (
-          <p className="rounded-lg bg-zinc-100 px-3 py-3 text-base dark:bg-zinc-900" aria-live="polite">
-            <strong>{formatMinorUnits(payMinor)}</strong> is <strong>{Math.round((payMinor * 100) / totalMinor)}%</strong> of{" "}
-            <strong>{total}</strong>
+          <p className="rounded-lg bg-sunk px-3 py-3 text-base" aria-live="polite">
+            <strong className="font-mono tabular-nums">{formatMinorUnits(payMinor)}</strong> is{" "}
+            <strong>{Math.round((payMinor * 100) / totalMinor)}%</strong> of <strong className="font-mono tabular-nums">{total}</strong>
           </p>
         )}
 

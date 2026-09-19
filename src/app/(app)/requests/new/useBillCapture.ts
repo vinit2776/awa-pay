@@ -58,6 +58,12 @@ export function useBillCapture({ onExtracted }: { onExtracted: (fill: ExtractedF
   const [isOfflineCapture, setIsOfflineCapture] = useState(false);
   const [offlineQueue, setOfflineQueue] = useState<QueuedAttachment[]>([]);
   const [queuedDraftCount, setQueuedDraftCount] = useState(0);
+  // "Skip — I'll type the details": the requester stops waiting on the
+  // model. A reading that lands afterwards must not overwrite what they've
+  // typed; its attempt id is still kept, so the model's answer and the
+  // human's values stay comparable exactly as when the reading succeeds.
+  const skippedRef = useRef(false);
+  const [readingSkipped, setReadingSkipped] = useState(false);
 
   useEffect(() => {
     void listDrafts()
@@ -140,6 +146,9 @@ export function useBillCapture({ onExtracted }: { onExtracted: (fill: ExtractedF
           blob,
         },
       ]);
+      // The page is safely up. Reading it is a separate wait, and one the
+      // requester can skip — so the upload stops counting as busy here.
+      setAttaching(false);
 
       // Extraction and the proactive duplicate note both only ever look
       // at the first page — a multi-page bill's headline fields read off
@@ -153,6 +162,8 @@ export function useBillCapture({ onExtracted }: { onExtracted: (fill: ExtractedF
           })
           .catch(() => {});
 
+        skippedRef.current = false;
+        setReadingSkipped(false);
         setExtracting(true);
         setExtractionNote(null);
         // A retaken first page must not carry the previous photo's
@@ -162,7 +173,10 @@ export function useBillCapture({ onExtracted }: { onExtracted: (fill: ExtractedF
         setExtractionPhash(null);
         try {
           const result = await withTimeout(runExtractionAction(slot.storageKey, mime), EXTRACTION_TIMEOUT_MS);
-          if (result?.ok) {
+          if (skippedRef.current) {
+            if (result) setExtractionAttemptId(result.attemptId);
+            if (result?.ok) setExtractionPhash(result.phash);
+          } else if (result?.ok) {
             onExtracted({
               vendor: String(result.fields.vendor.value ?? ""),
               amount: result.fields.amount.value === null ? "" : String(result.fields.amount.value),
@@ -187,7 +201,7 @@ export function useBillCapture({ onExtracted }: { onExtracted: (fill: ExtractedF
             if (result?.ok === false) setExtractionAttemptId(result.attemptId);
           }
         } catch {
-          setExtractionNote(EXTRACTION_FAILED_NOTE);
+          if (!skippedRef.current) setExtractionNote(EXTRACTION_FAILED_NOTE);
         } finally {
           setExtracting(false);
         }
@@ -238,5 +252,11 @@ export function useBillCapture({ onExtracted }: { onExtracted: (fill: ExtractedF
     attachFile,
     removeAttachment,
     removeOfflineAttachment,
+    readingSkipped,
+    skipReading: () => {
+      skippedRef.current = true;
+      setReadingSkipped(true);
+      setExtracting(false);
+    },
   };
 }

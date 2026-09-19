@@ -1,38 +1,40 @@
 import { useId, type ReactNode } from "react";
+import { isLowConfidence, type ExtractedField } from "@/capture/confirmFields";
 
 // Shared building blocks for the raise-a-request wizard. Tap targets follow
 // the brief for a low-tech requester on a phone: buttons at least 54px tall,
-// inputs at least 48px, all text 16px or larger.
+// inputs at least 48px, all text 16px or larger. Colours come from the
+// design tokens (src/app/globals.css); the sizes deliberately don't follow
+// the denser desk screens.
 
 export const inputClass =
-  "min-h-12 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-base dark:border-zinc-700 dark:bg-black";
+  "min-h-12 w-full rounded-lg border border-line bg-surface px-3 py-2 text-base text-ink placeholder:text-ink-3 focus-visible:border-accent focus-visible:outline-2 focus-visible:outline-accent-soft";
 
-const focusRing = "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-black dark:focus-visible:outline-white";
+const focusRing = "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent";
 
-export const primaryButtonClass = `min-h-[54px] w-full rounded-lg bg-black px-4 text-base font-semibold text-white disabled:opacity-50 dark:bg-white dark:text-black ${focusRing}`;
-export const secondaryButtonClass = `min-h-[54px] rounded-lg border border-zinc-300 px-4 text-base font-medium disabled:opacity-50 dark:border-zinc-700 ${focusRing}`;
+export const primaryButtonClass = `min-h-[54px] w-full rounded-lg bg-accent px-4 text-base font-semibold text-accent-ink transition-colors hover:bg-accent/90 disabled:opacity-45 ${focusRing}`;
+export const secondaryButtonClass = `min-h-[54px] rounded-lg border border-line bg-surface px-4 text-base font-medium text-ink transition-colors hover:bg-sunk disabled:opacity-45 ${focusRing}`;
+export const linkButtonClass = `min-h-12 px-2 text-base font-medium text-accent underline underline-offset-4 disabled:opacity-45 ${focusRing}`;
+export const dangerLinkClass = `min-h-12 px-2 text-base font-medium text-danger underline underline-offset-4 disabled:opacity-45 ${focusRing}`;
 
-export function ConfidenceBadge({ confidence }: { confidence: number | undefined }) {
+// Replaces the old flat-0.8 badge. Whether a read is "unsure" comes from
+// src/capture/confirmFields.ts — the same floors the server escalates on.
+export function FieldCheck({ field, confidence, confirmed }: { field: ExtractedField; confidence: number | undefined; confirmed: boolean }) {
   if (confidence === undefined) return null;
-  return confidence >= 0.8 ? (
-    <span className="text-sm font-normal text-green-700 dark:text-green-400">✓ High confidence</span>
-  ) : (
-    <span className="text-sm font-normal text-amber-700 dark:text-amber-400">! Low confidence — please confirm</span>
-  );
+  if (!isLowConfidence(field, confidence)) return <span className="text-sm font-medium text-ok">✓ Read from your photo</span>;
+  if (confirmed) return <span className="text-sm font-medium text-ok">✓ Checked</span>;
+  return <span className="text-sm font-semibold text-warn">! Check this against your photo</span>;
 }
 
 export function StepHeader({ step, total }: { step: number; total: number }) {
   return (
     <div className="flex flex-col gap-2">
-      <p className="text-base text-zinc-600 dark:text-zinc-400">
+      <p className="text-base text-ink-2">
         Step {step} of {total}
       </p>
       <div className="flex gap-1.5" role="progressbar" aria-valuemin={1} aria-valuemax={total} aria-valuenow={step} aria-label="Progress">
         {Array.from({ length: total }, (_, i) => (
-          <div
-            key={i}
-            className={`h-1.5 flex-1 rounded-full ${i < step ? "bg-black dark:bg-white" : "bg-zinc-200 dark:bg-zinc-800"}`}
-          />
+          <div key={i} className={`h-1.5 flex-1 rounded-full ${i < step ? "bg-accent" : "bg-line"}`} />
         ))}
       </div>
     </div>
@@ -52,13 +54,26 @@ export function Field({
 }) {
   return (
     <label className="flex flex-col gap-1.5">
-      <span className="flex items-center justify-between gap-2 text-base font-medium">
+      <span className="flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 text-base font-medium">
         <span>{label}</span>
         {badge}
       </span>
       {children}
-      {hint && <span className="text-base text-zinc-600 dark:text-zinc-400">{hint}</span>}
+      {hint && <span className="text-base text-ink-2">{hint}</span>}
     </label>
+  );
+}
+
+// A boxed message at the wizard's own 16px size — the shared Notice is
+// set for the desk screens and would break the brief's minimum here.
+export function Callout({ tone, title, children }: { tone: "warn" | "danger" | "info"; title?: string; children: ReactNode }) {
+  const box = { warn: "border-warn-line bg-warn-soft", danger: "border-danger-line bg-danger-soft", info: "border-transparent bg-info-soft" }[tone];
+  const heading = { warn: "text-warn", danger: "text-danger", info: "text-info" }[tone];
+  return (
+    <div role={tone === "danger" ? "alert" : "status"} className={`flex flex-col gap-1.5 rounded-lg border p-3 text-base text-ink ${box}`}>
+      {title && <p className={`font-semibold ${heading}`}>{title}</p>}
+      {children}
+    </div>
   );
 }
 
@@ -80,14 +95,12 @@ export function ChoiceCard({
       role="radio"
       aria-checked={selected}
       onClick={onSelect}
-      className={`flex min-h-[72px] w-full flex-col items-start gap-1 rounded-lg border-2 px-4 py-3 text-left ${focusRing} ${
-        selected
-          ? "border-black bg-zinc-100 dark:border-white dark:bg-zinc-900"
-          : "border-zinc-300 dark:border-zinc-700"
+      className={`flex min-h-[72px] w-full flex-col items-start gap-1 rounded-xl border-2 px-4 py-3 text-left transition-colors ${focusRing} ${
+        selected ? "border-accent bg-accent-soft" : "border-line bg-surface hover:border-ink-3"
       }`}
     >
       <span className="text-base font-semibold">{title}</span>
-      <span className="text-base text-zinc-600 dark:text-zinc-400">{sub}</span>
+      <span className="text-base text-ink-2">{sub}</span>
     </button>
   );
 }
@@ -99,10 +112,8 @@ export function Chip({ label, selected, onSelect }: { label: string; selected: b
       role="radio"
       aria-checked={selected}
       onClick={onSelect}
-      className={`min-h-12 rounded-full border-2 px-4 text-base ${focusRing} ${
-        selected
-          ? "border-black bg-black font-semibold text-white dark:border-white dark:bg-white dark:text-black"
-          : "border-zinc-300 dark:border-zinc-700"
+      className={`min-h-12 rounded-full border-2 px-4 text-base transition-colors ${focusRing} ${
+        selected ? "border-accent bg-accent font-semibold text-accent-ink" : "border-line bg-surface text-ink hover:border-ink-3"
       }`}
     >
       {label}
@@ -127,7 +138,7 @@ export function ChipGroup({ label, children }: { label: string; children: ReactN
 export function ErrorLine({ message }: { message: string | null }) {
   if (!message) return null;
   return (
-    <p role="alert" className="text-base text-red-600 dark:text-red-400">
+    <p role="alert" className="text-base text-danger">
       {message}
     </p>
   );
@@ -144,16 +155,16 @@ export function CameraIcon() {
 
 export function CheckIcon() {
   return (
-    <svg width="72" height="72" viewBox="0 0 72 72" fill="none" aria-hidden="true">
-      <circle cx="36" cy="36" r="33" stroke="currentColor" strokeWidth="3" className="text-green-600 dark:text-green-400" />
-      <path d="M22 37l10 10 18-21" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" className="text-green-600 dark:text-green-400" />
+    <svg width="72" height="72" viewBox="0 0 72 72" fill="none" aria-hidden="true" className="text-ok">
+      <circle cx="36" cy="36" r="33" stroke="currentColor" strokeWidth="3" />
+      <path d="M22 37l10 10 18-21" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
 
 export function Spinner() {
   return (
-    <svg className="animate-spin" width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <svg className="animate-spin motion-reduce:animate-none" width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
       <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="3" className="opacity-25" />
       <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
     </svg>
@@ -165,10 +176,10 @@ export function Spinner() {
 export function StepTitle({ title, sub }: { title: string; sub?: string }) {
   return (
     <div className="flex flex-col gap-1">
-      <h2 tabIndex={-1} className="text-2xl font-semibold outline-none">
+      <h2 tabIndex={-1} className="text-2xl font-semibold tracking-tight text-balance outline-none">
         {title}
       </h2>
-      {sub && <p className="text-base text-zinc-600 dark:text-zinc-400">{sub}</p>}
+      {sub && <p className="text-base text-ink-2">{sub}</p>}
     </div>
   );
 }
