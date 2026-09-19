@@ -67,6 +67,10 @@ describe("needs the requester", () => {
     expect(needsRequesterReason({ stage: "raised", returnReason: "GSTIN missing", openQuery: null })).toBe("Returned: “GSTIN missing”");
   });
 
+  it("asks for the tax invoice once an advance has gone out", () => {
+    expect(needsRequesterReason({ stage: "awaiting_invoice", returnReason: null, openQuery: null })).toMatch(/attach the tax invoice/);
+  });
+
   it("is null for anything moving without them", () => {
     expect(needsRequesterReason({ stage: "with_accounts", returnReason: null, openQuery: null })).toBeNull();
   });

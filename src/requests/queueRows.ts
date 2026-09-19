@@ -101,8 +101,10 @@ export function shortDate(isoDate: string): string {
 }
 
 // Why a request is waiting on its requester, in their words, or null when
-// it isn't. Returned bills (stage raised) and open queries directed at the
-// requester are the two things only they can move.
+// it isn't. Returned bills (stage raised), advances waiting for their tax
+// invoice (awaiting_invoice — STAGE_OWNER_ROLE gives both to the
+// requester), and open queries directed at the requester are the things
+// only they can move.
 export function needsRequesterReason(input: {
   stage: string;
   returnReason: string | null;
@@ -110,5 +112,6 @@ export function needsRequesterReason(input: {
 }): string | null {
   if (input.openQuery) return `Question from ${input.openQuery.raisedByName}: “${input.openQuery.question}”`;
   if (input.stage === "raised") return input.returnReason ? `Returned: “${input.returnReason}”` : "Returned for correction";
+  if (input.stage === "awaiting_invoice") return "Advance paid — attach the tax invoice to release the balance";
   return null;
 }
