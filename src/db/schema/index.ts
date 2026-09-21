@@ -21,3 +21,4 @@ export * from "./vendorDocument";
 export * from "./duplicateCheck";
 export * from "./extractionAttempt";
 export * from "./extraction";
+export * from "./relations";

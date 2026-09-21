@@ -1,7 +1,7 @@
 import { and, desc, eq, sql } from "drizzle-orm";
 import { type ScopedTx, withGrantScope } from "@/db/runtime";
 import { event, request, requestFile } from "@/db/schema";
-import { actorHoldsRole, checkDuplicates, recordDuplicateCheck, type DuplicateMatch, type DuplicateVerdict } from "@/duplicates/duplicateCore";
+import { actorHoldsRoleInTx, checkDuplicatesInTx, recordDuplicateCheck, type DuplicateMatch, type DuplicateVerdict } from "@/duplicates/duplicateCore";
 import { computeEventHash } from "@/events/hash";
 import { attachExtractionToRequest } from "@/extraction/extractCore";
 import { headObjectContentLength } from "@/storage/r2";
@@ -111,45 +111,47 @@ export async function submitRequest(params: SubmitRequestParams): Promise<Submit
   // Server-side corroboration for "checksum on arrival" (see
   // src/storage/r2.ts's header comment for what this does and doesn't
   // guarantee) — reject before opening any transaction if a file's length
-  // doesn't match what R2 actually received.
-  for (const attachment of params.attachments) {
-    const actualLength = await headObjectContentLength(attachment.storageKey);
-    if (actualLength === null || actualLength !== attachment.byteLength) {
-      return { ok: false, error: "One of the uploaded files could not be verified. Please try again." };
-    }
-  }
-
-  // The advisory duplicate check (phase 11): the only signal available
-  // this early is a byte-identical file — no vendor has been matched yet,
-  // so the decisive vendor+invoice+FY signal isn't computable until
-  // accountRequest. Checked across every attachment; the worst verdict
-  // among them wins. Same read-before-write shape payRequest's bank-
-  // readiness check already uses — a narrow, accepted race window, not
-  // the actual enforcement boundary (that's the database's own unique
-  // indexes, unconditionally, at account/pay time).
-  let duplicate: { match: DuplicateMatch; verdict: DuplicateVerdict } | null = null;
-  for (const attachment of params.attachments) {
-    const result = await checkDuplicates(params.userId, "requester", { checksum: attachment.sha256 });
-    if (result.verdict !== "none" && result.match) {
-      duplicate = { match: result.match, verdict: result.verdict };
-      if (result.verdict === "blocked_paid") break;
-    }
-  }
-
-  let override: { by: string; reason: string } | null = null;
-  if (duplicate?.verdict === "blocked_paid") {
-    if (!params.overrideDuplicate) {
-      return { ok: false, error: "This looks like the same bill as an already-paid request.", duplicate };
-    }
-    if (!(await actorHoldsRole(params.userId, "super_admin"))) {
-      return { ok: false, error: "Only a super admin can override a matched, already-paid bill.", duplicate };
-    }
-    override = { by: params.userId, reason: params.overrideDuplicate.reason };
+  // doesn't match what R2 actually received. Independent network calls, so
+  // concurrent rather than one after another.
+  const lengths = await Promise.all(params.attachments.map((a) => headObjectContentLength(a.storageKey)));
+  if (params.attachments.some((a, i) => lengths[i] === null || lengths[i] !== a.byteLength)) {
+    return { ok: false, error: "One of the uploaded files could not be verified. Please try again." };
   }
 
   const currency = params.currency ?? "INR";
 
-  const newRequest = await withGrantScope(params.userId, "requester", async (tx) => {
+  const outcome = await withGrantScope(params.userId, "requester", async (tx) => {
+    // The advisory duplicate check (phase 11): the only signal available
+    // this early is a byte-identical file — no vendor has been matched yet,
+    // so the decisive vendor+invoice+FY signal isn't computable until
+    // accountRequest. Checked across every attachment; the worst verdict
+    // among them wins. Same read-before-write shape payRequest's bank-
+    // readiness check already uses — a narrow, accepted race window, not
+    // the actual enforcement boundary (that's the database's own unique
+    // indexes, unconditionally, at account/pay time). Runs in the same
+    // transaction as the insert it guards, rather than in transactions of
+    // its own before it (one per attachment, plus one for the super-admin
+    // check): each of those was a full scope setup plus commit.
+    let duplicate: { match: DuplicateMatch; verdict: DuplicateVerdict } | null = null;
+    for (const attachment of params.attachments) {
+      const result = await checkDuplicatesInTx(tx, { checksum: attachment.sha256 });
+      if (result.verdict !== "none" && result.match) {
+        duplicate = { match: result.match, verdict: result.verdict };
+        if (result.verdict === "blocked_paid") break;
+      }
+    }
+
+    let override: { by: string; reason: string } | null = null;
+    if (duplicate?.verdict === "blocked_paid") {
+      if (!params.overrideDuplicate) {
+        return { kind: "blocked" as const, result: { ok: false as const, error: "This looks like the same bill as an already-paid request.", duplicate } };
+      }
+      if (!(await actorHoldsRoleInTx(tx, params.userId, "super_admin"))) {
+        return { kind: "blocked" as const, result: { ok: false as const, error: "Only a super admin can override a matched, already-paid bill.", duplicate } };
+      }
+      override = { by: params.userId, reason: params.overrideDuplicate.reason };
+    }
+
     const routedApproverId = params.linkedRequestId ? await resolveRoutedApprover(tx, params.linkedRequestId) : null;
 
     const [inserted] = await tx
@@ -259,8 +261,9 @@ export async function submitRequest(params: SubmitRequestParams): Promise<Submit
 
     await tx.insert(event).values({ ...eventFields, ip: params.ip, userAgent: params.userAgent, prevHash: null, hash });
 
-    return inserted;
+    return { kind: "inserted" as const, inserted };
   });
 
-  return { ok: true, ref: newRequest.ref, requestId: newRequest.id };
+  if (outcome.kind === "blocked") return outcome.result;
+  return { ok: true, ref: outcome.inserted.ref, requestId: outcome.inserted.id };
 }

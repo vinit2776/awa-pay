@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { closeOwnerConnection, dbOwner } from "../scripts/db-owner";
+import { cleanupFixturesForNonce } from "../scripts/fixtures";
 import { withGrantScope } from "../src/db/runtime";
-import { accounting, company, department, event, headOfAccount, payment, request, requestFile, roleGrant, user, vendor, vendorBank, vendorDocument } from "../src/db/schema";
+import { company, department, headOfAccount, roleGrant, user, vendorBank, vendorDocument } from "../src/db/schema";
 import { hashSecret } from "../src/auth/password";
 import { submitRequest, type Attachment } from "../src/requests/captureCore";
 import { accountRequest, approveRequest, payRequest } from "../src/requests/transitions";
@@ -96,28 +97,11 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  const userIds = [requesterUser.id, approverUser.id, accountantUser.id, payerUser.id];
-
-  const reqs = await dbOwner.select({ id: request.id }).from(request).where(eq(request.departmentId, deptA.id));
-  const reqIds = reqs.map((r) => r.id);
-  if (reqIds.length > 0) {
-    await dbOwner.delete(payment).where(inArray(payment.requestId, reqIds));
-    await dbOwner.delete(accounting).where(inArray(accounting.requestId, reqIds));
-    await dbOwner.delete(event).where(inArray(event.requestId, reqIds));
-    await dbOwner.delete(requestFile).where(inArray(requestFile.requestId, reqIds));
-    await dbOwner.delete(request).where(inArray(request.id, reqIds));
+  try {
+    await cleanupFixturesForNonce(dbOwner, nonce);
+  } finally {
+    await closeOwnerConnection();
   }
-  await dbOwner.delete(roleGrant).where(inArray(roleGrant.userId, userIds));
-  if (createdVendorIds.length > 0) {
-    await dbOwner.delete(vendorDocument).where(inArray(vendorDocument.vendorId, createdVendorIds));
-    await dbOwner.delete(vendorBank).where(inArray(vendorBank.vendorId, createdVendorIds));
-    await dbOwner.delete(vendor).where(inArray(vendor.id, createdVendorIds));
-  }
-  await dbOwner.delete(headOfAccount).where(eq(headOfAccount.id, head.id));
-  await dbOwner.delete(department).where(eq(department.id, deptA.id));
-  await dbOwner.delete(company).where(eq(company.id, companyX.id));
-  await dbOwner.delete(user).where(inArray(user.id, userIds));
-  await closeOwnerConnection();
 });
 
 describe("payer verification (the phase-10 gate)", () => {

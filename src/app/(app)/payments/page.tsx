@@ -16,6 +16,8 @@ export default async function PaymentsQueuePage() {
   const now = new Date();
   const today = todayInIndia(now);
 
+  // One payer-scoped transaction for the queue, its flags, when each bill
+  // entered this stage, and the approve events that decide its order.
   const [rows, flagContext, stageEntered, approveEvents] = await withGrantScope(session.userId, "payer", async (tx) => {
     const result = await tx
       .select({ request, departmentName: department.name, companyName: company.name })

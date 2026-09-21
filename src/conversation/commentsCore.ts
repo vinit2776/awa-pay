@@ -1,7 +1,7 @@
 import { inArray, sql } from "drizzle-orm";
-import { type Role, withGrantScope } from "@/db/runtime";
+import { type Role, withViewerRole } from "@/db/runtime";
 import { comment, requestFile, user } from "@/db/schema";
-import { resolveViewerRole } from "@/requests/viewerRole";
+import { ROLE_PRIORITY, selectRequestById } from "@/requests/viewerRole";
 import { resolveMentions } from "./mentions";
 import { CONVERSATION_ROLES } from "./roles";
 
@@ -24,16 +24,13 @@ export async function postComment(params: PostCommentParams): Promise<PostCommen
     return { ok: false, error: "Say something first." };
   }
 
-  const resolved = await resolveViewerRole(params.userId, params.requestId);
-  if (!resolved) {
-    return { ok: false, error: "Request not found." };
-  }
-  const { role, request: req } = resolved;
-  if (!CONVERSATION_ROLES.includes(role)) {
-    return { ok: false, error: "This role can't post comments." };
-  }
+  // Role resolution and the write share one transaction (withViewerRole)
+  // instead of a probe transaction followed by a scoped one.
+  const result = await withViewerRole(params.userId, ROLE_PRIORITY, selectRequestById(params.requestId), async (tx, { role, probed: req }): Promise<PostCommentResult> => {
+    if (!CONVERSATION_ROLES.includes(role)) {
+      return { ok: false, error: "This role can't post comments." };
+    }
 
-  return withGrantScope(params.userId, role, async (tx) => {
     // Mention candidates: anyone who could plausibly be pulled into this
     // request's conversation — the same reverse lookup phase 8's email
     // recipient resolution reuses unchanged.
@@ -78,4 +75,5 @@ export async function postComment(params: PostCommentParams): Promise<PostCommen
 
     return { ok: true, commentId: inserted.id, mentions, role };
   });
+  return result ?? { ok: false, error: "Request not found." };
 }
