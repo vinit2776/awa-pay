@@ -1,17 +1,12 @@
-import { and, asc, desc, eq, isNull } from "drizzle-orm";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { withGrantScope } from "@/db/runtime";
-import { accounting, comment, company, department, event, headOfAccount, payment, query, requestFile, user } from "@/db/schema";
 import { renderEventSummary } from "@/events/render";
-import { computeFlags, loadFlagContext } from "@/flags/computeFlags";
+import { computeFlags } from "@/flags/computeFlags";
 import { FlagChips } from "@/ui/FlagChips";
 import { formatMinorUnits } from "@/lib/money";
-import { resolveViewerRole } from "@/requests/viewerRole";
+import { loadRequestView } from "@/requests/requestView";
 import { presignGetUrl } from "@/storage/r2";
 import { verifySession } from "@/auth/dal";
-import { checkPaymentBankReadiness } from "@/vendors/verifyCore";
-import { actorHoldsRole } from "@/duplicates/duplicateCore";
 import { ApproverPanel } from "./ApproverPanel";
 import { AttachInvoicePanel } from "./AttachInvoicePanel";
 import { AccountantPanel } from "./AccountantPanel";
@@ -24,61 +19,31 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
   const { id } = await params;
   const session = await verifySession();
 
-  const resolved = await resolveViewerRole(session.userId, id);
-  if (!resolved) {
+  // One transaction for everything this page reads (role resolution
+  // included) — see src/requests/requestView.ts.
+  const view = await loadRequestView(session.userId, id);
+  if (!view) {
     notFound();
   }
-  const { role, request: req } = resolved;
-
-  const [department_, files, commentAttachments, accountingRows, payments, events, comments, openQueryRows, routedApproverName, flagContext] = await withGrantScope(
-    session.userId,
+  const {
     role,
-    async (tx) => {
-      const [dept] = await tx.select().from(department).where(eq(department.id, req.departmentId)).limit(1);
-      const bills = await tx
-        .select()
-        .from(requestFile)
-        .where(and(eq(requestFile.requestId, req.id), eq(requestFile.kind, "bill")))
-        .orderBy(asc(requestFile.pageNo));
-      const attachments = await tx
-        .select()
-        .from(requestFile)
-        .where(and(eq(requestFile.requestId, req.id), eq(requestFile.kind, "comment_attachment")))
-        .orderBy(asc(requestFile.createdAt));
-      const accountingHistory = await tx
-        .select()
-        .from(accounting)
-        .where(eq(accounting.requestId, req.id))
-        .orderBy(desc(accounting.accountedAt));
-      const paymentRows = await tx.select().from(payment).where(eq(payment.requestId, req.id)).orderBy(asc(payment.paidAt));
-      const eventRows = await tx
-        .select({ event, actorName: user.name })
-        .from(event)
-        .leftJoin(user, eq(user.id, event.actor))
-        .where(eq(event.requestId, req.id))
-        .orderBy(asc(event.at));
-      const commentRows = await tx
-        .select({ comment, authorName: user.name })
-        .from(comment)
-        .leftJoin(user, eq(user.id, comment.author))
-        .where(eq(comment.requestId, req.id))
-        .orderBy(asc(comment.at));
-      const openQueries = await tx
-        .select({ query, raisedByName: user.name })
-        .from(query)
-        .leftJoin(user, eq(user.id, query.raisedBy))
-        .where(and(eq(query.requestId, req.id), isNull(query.resolvedAt)))
-        .orderBy(asc(query.at));
-      // The reconsideration routing hint (phase 11) — a soft nudge, not
-      // enforcement: any approver in the department pool can still act on
-      // this request regardless of whether they're the one named here.
-      const routedName = req.routedApproverId
-        ? (await tx.select({ name: user.name }).from(user).where(eq(user.id, req.routedApproverId)).limit(1))[0]?.name ?? null
-        : null;
-      const flagCtx = await loadFlagContext(tx, [req]);
-      return [dept, bills, attachments, accountingHistory, paymentRows, eventRows, commentRows, openQueries, routedName, flagCtx];
-    },
-  );
+    req,
+    department: department_,
+    bills: files,
+    commentAttachments,
+    accountingRows,
+    payments,
+    events,
+    comments,
+    openQueryRows,
+    routedApproverName,
+    flagContext,
+    companies,
+    heads,
+    canOverrideDuplicate,
+    companyForPayer,
+    bankReadiness,
+  } = view;
 
   const filesWithUrls = await Promise.all(
     files.map(async (f) => ({ ...f, downloadUrl: await presignGetUrl(f.storageKey) })),
@@ -124,31 +89,6 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
     : req.payNowMinor !== null && settledMinor < req.payNowMinor
       ? req.payNowMinor - settledMinor
       : balanceMinor;
-
-  // The accountant panel needs company/head pickers — only fetched when
-  // this viewer could actually need them, since company_select is
-  // company-scoped and would otherwise just return an empty list to roles
-  // that don't hold company scope at all.
-  const [companies, heads] =
-    role === "accountant"
-      ? await withGrantScope(session.userId, "accountant", async (tx) => [
-          await tx.select().from(company).where(eq(company.active, true)),
-          await tx.select().from(headOfAccount).where(eq(headOfAccount.active, true)),
-        ])
-      : [[], []];
-
-  const canOverrideDuplicate = role === "accountant" ? await actorHoldsRole(session.userId, "super_admin") : false;
-
-  const companyForPayer =
-    role === "payer" && req.companyId
-      ? (await withGrantScope(session.userId, "payer", (tx) => tx.select().from(company).where(eq(company.id, req.companyId!)).limit(1)))[0]
-      : null;
-
-  // The payer-verification gate (phase 10) — computed here, server-side,
-  // same as companies/heads above, rather than fetched client-side: it's
-  // a live read (see checkPaymentBankReadiness's own comment on why),
-  // fetched once per page load alongside everything else this role needs.
-  const bankReadiness = role === "payer" && req.stage === "to_pay" ? await checkPaymentBankReadiness(session.userId, req.id) : null;
 
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-6 px-4 py-8">

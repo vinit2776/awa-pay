@@ -1,9 +1,9 @@
 import { eq } from "drizzle-orm";
-import { type Role, withGrantScope } from "@/db/runtime";
+import { type Role, withViewerRole } from "@/db/runtime";
 import { query } from "@/db/schema";
 import { appendEvent, type Meta } from "@/events/append";
 import { lockRequestMutex } from "@/requests/lock";
-import { resolveViewerRole } from "@/requests/viewerRole";
+import { ROLE_PRIORITY, selectRequestById } from "@/requests/viewerRole";
 import { CONVERSATION_ROLES } from "./roles";
 
 // Pure orchestration, no next/headers — mirrors commentsCore.ts's shape.
@@ -33,16 +33,12 @@ export async function raiseQuery(actorId: string, requestId: string, params: Rai
     return { ok: false, error: "Choose who this is directed at." };
   }
 
-  const resolved = await resolveViewerRole(actorId, requestId);
-  if (!resolved) {
-    return { ok: false, error: "Request not found." };
-  }
-  const { role } = resolved;
-  if (!CONVERSATION_ROLES.includes(role)) {
-    return { ok: false, error: "This role can't raise queries." };
-  }
+  // Role resolution and the write share one transaction (withViewerRole).
+  const result = await withViewerRole(actorId, ROLE_PRIORITY, selectRequestById(requestId), async (tx, { role }): Promise<QueryResult> => {
+    if (!CONVERSATION_ROLES.includes(role)) {
+      return { ok: false, error: "This role can't raise queries." };
+    }
 
-  return withGrantScope(actorId, role, async (tx) => {
     await lockRequestMutex(tx, requestId);
 
     const [inserted] = await tx
@@ -68,6 +64,7 @@ export async function raiseQuery(actorId: string, requestId: string, params: Rai
 
     return { ok: true, queryId: inserted.id, role };
   });
+  return result ?? { ok: false, error: "Request not found." };
 }
 
 export type AnswerQueryParams = { answer: string };
@@ -84,13 +81,7 @@ export async function answerQuery(
     return { ok: false, error: "An answer is required." };
   }
 
-  const resolved = await resolveViewerRole(actorId, requestId);
-  if (!resolved) {
-    return { ok: false, error: "Request not found." };
-  }
-  const { role } = resolved;
-
-  return withGrantScope(actorId, role, async (tx) => {
+  const result = await withViewerRole(actorId, ROLE_PRIORITY, selectRequestById(requestId), async (tx, { role }): Promise<AnswerResult> => {
     await lockRequestMutex(tx, requestId);
 
     const [q] = await tx.select().from(query).where(eq(query.id, queryId)).for("update");
@@ -127,4 +118,5 @@ export async function answerQuery(
 
     return { ok: true, role, raisedBy: q.raisedBy };
   });
+  return result ?? { ok: false, error: "Request not found." };
 }
