@@ -24,7 +24,13 @@ export const requestStageEnum = pgEnum("request_stage", [
   "on_hold",
   "rejected",
   "withdrawn",
+  "awaiting_invoice",
 ]);
+
+// invoice: a tax invoice exists on day one. advance: only a quotation,
+// proforma or work order exists, money goes out first and the tax invoice
+// is collected afterwards (concept-v2.html section 09).
+export const requestKindEnum = pgEnum("request_kind", ["invoice", "advance"]);
 
 export const paymentModeEnum = pgEnum("payment_mode", ["neft", "rtgs", "imps", "upi", "cheque", "other"]);
 

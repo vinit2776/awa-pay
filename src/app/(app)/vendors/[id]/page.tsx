@@ -13,7 +13,7 @@ import { eyebrowClass } from "@/ui/styles";
 import { tdsRateLabel } from "@/vendors/tds";
 import { bankVersions, indianFinancialYear, paidInFinancialYear } from "@/vendors/vendorDisplay";
 import { getVendor, listVendorPaymentHistory } from "@/vendors/vendorsCore";
-import { resolveVendorViewerRoles, resolveVendorWriterRole } from "@/vendors/viewerRole";
+import { resolveVendorViewerRoles } from "@/vendors/viewerRole";
 import { VendorBankForm } from "./VendorBankForm";
 import { VendorDocumentUpload } from "./VendorDocumentUpload";
 import { VendorProfileForm } from "./VendorProfileForm";
@@ -63,7 +63,9 @@ export default async function VendorPage({ params }: PageProps<"/vendors/[id]">)
     notFound();
   }
   const role = roles[0];
-  const editRole = await resolveVendorWriterRole(session.userId);
+  // Derived from the roles just read — resolveVendorWriterRole would run the
+  // same role_grant query (a whole transaction) a second time.
+  const editRole = roles.includes("accountant") ? "accountant" : roles.includes("super_admin") ? "super_admin" : null;
   const canEdit = editRole !== null;
 
   const found = await getVendor(session.userId, role, id);
@@ -74,32 +76,40 @@ export default async function VendorPage({ params }: PageProps<"/vendors/[id]">)
 
   const enteredBy = alias(user, "entered_by_user");
   const verifiedBy = alias(user, "verified_by_user");
-  const [defaultHead, bankRows] = await withGrantScope(session.userId, role, async (tx) => {
-    const [head] = vendor.defaultHeadId ? await tx.select().from(headOfAccount).where(eq(headOfAccount.id, vendor.defaultHeadId)).limit(1) : [null];
-    // Every version, not just the live one — never the encrypted account
-    // number, only the last four digits the page already shows.
-    const rows = await tx
-      .select({
-        id: vendorBank.id,
-        beneficiaryName: vendorBank.beneficiaryName,
-        accountNumberLast4: vendorBank.accountNumberLast4,
-        ifsc: vendorBank.ifsc,
-        branch: vendorBank.branch,
-        effectiveFrom: vendorBank.effectiveFrom,
-        supersededAt: vendorBank.supersededAt,
-        verifiedAt: vendorBank.verifiedAt,
-        enteredAsRole: vendorBank.enteredAsRole,
-        enteredByName: enteredBy.name,
-        verifiedByName: verifiedBy.name,
-      })
-      .from(vendorBank)
-      .leftJoin(enteredBy, eq(enteredBy.id, vendorBank.enteredBy))
-      .leftJoin(verifiedBy, eq(verifiedBy.id, vendorBank.verifiedBy))
-      .where(eq(vendorBank.vendorId, id));
-    return [head ?? null, rows] as const;
-  });
+  // Independent scoped reads run together — separate connections, so they
+  // overlap instead of queuing (each is its own transaction).
+  const [[defaultHead], bankRows, payments, heads] = await Promise.all([
+    vendor.defaultHeadId
+      ? withGrantScope(session.userId, role, (tx) => tx.select().from(headOfAccount).where(eq(headOfAccount.id, vendor.defaultHeadId!)).limit(1))
+      : Promise.resolve([null]),
+    // Every bank version, not just the live one — never the encrypted
+    // account number, only the last four digits the page already shows.
+    withGrantScope(session.userId, role, (tx) =>
+      tx
+        .select({
+          id: vendorBank.id,
+          beneficiaryName: vendorBank.beneficiaryName,
+          accountNumberLast4: vendorBank.accountNumberLast4,
+          ifsc: vendorBank.ifsc,
+          branch: vendorBank.branch,
+          effectiveFrom: vendorBank.effectiveFrom,
+          supersededAt: vendorBank.supersededAt,
+          verifiedAt: vendorBank.verifiedAt,
+          enteredAsRole: vendorBank.enteredAsRole,
+          enteredByName: enteredBy.name,
+          verifiedByName: verifiedBy.name,
+        })
+        .from(vendorBank)
+        .leftJoin(enteredBy, eq(enteredBy.id, vendorBank.enteredBy))
+        .leftJoin(verifiedBy, eq(verifiedBy.id, vendorBank.verifiedBy))
+        .where(eq(vendorBank.vendorId, id)),
+    ),
+    listVendorPaymentHistory(session.userId, role, id),
+    canEdit && editRole
+      ? withGrantScope(session.userId, editRole, (tx) => tx.select().from(headOfAccount).where(eq(headOfAccount.active, true)))
+      : Promise.resolve([]),
+  ]);
 
-  const payments = await listVendorPaymentHistory(session.userId, role, id);
   const documentsWithUrls = await Promise.all(documents.map(async (d) => ({ ...d, downloadUrl: await presignGetUrl(d.storageKey) })));
 
   const versions = bankVersions(bankRows);
@@ -107,8 +117,6 @@ export default async function VendorPage({ params }: PageProps<"/vendors/[id]">)
   const past = versions.filter((v) => !v.current).reverse();
   const fy = indianFinancialYear(new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(new Date()));
   const thisYear = paidInFinancialYear(payments, fy);
-
-  const heads = canEdit && editRole ? await withGrantScope(session.userId, editRole, (tx) => tx.select().from(headOfAccount).where(eq(headOfAccount.active, true))) : [];
 
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-5 px-4 py-6">

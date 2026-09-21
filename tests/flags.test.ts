@@ -2,10 +2,11 @@ import { randomUUID } from "node:crypto";
 import { inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { closeOwnerConnection, dbOwner } from "../scripts/db-owner";
+import { cleanupFixturesForNonce } from "../scripts/fixtures";
 import { hashSecret } from "../src/auth/password";
 import { answerQuery, raiseQuery } from "../src/conversation/queriesCore";
 import { type Role, withGrantScope } from "../src/db/runtime";
-import { accounting, company, department, event, payment, headOfAccount, query, request, requestFile, roleGrant, user, vendor, vendorBank } from "../src/db/schema";
+import { company, department, headOfAccount, request, roleGrant, user } from "../src/db/schema";
 import { computeFlags, loadFlagContext, type Flag, type FlagContext, type RequestForFlags } from "../src/flags/computeFlags";
 import { type Attachment, submitRequest } from "../src/requests/captureCore";
 import { accountRequest, approveRequest, holdRequest, payRequest } from "../src/requests/transitions";
@@ -236,28 +237,11 @@ beforeAll(async () => {
 }, 60_000);
 
 afterAll(async () => {
-  const userIds = [requesterUser.id, approverUser.id, accountantUser.id, payerUser.id];
-
-  const reqs = await dbOwner.select({ id: request.id }).from(request).where(inArray(request.departmentId, [deptA.id]));
-  const reqIds = reqs.map((r) => r.id);
-  if (reqIds.length > 0) {
-    await dbOwner.delete(payment).where(inArray(payment.requestId, reqIds));
-    await dbOwner.delete(accounting).where(inArray(accounting.requestId, reqIds));
-    await dbOwner.delete(query).where(inArray(query.requestId, reqIds));
-    await dbOwner.delete(event).where(inArray(event.requestId, reqIds));
-    await dbOwner.delete(requestFile).where(inArray(requestFile.requestId, reqIds));
-    await dbOwner.delete(request).where(inArray(request.id, reqIds));
+  try {
+    await cleanupFixturesForNonce(dbOwner, nonce);
+  } finally {
+    await closeOwnerConnection();
   }
-  await dbOwner.delete(roleGrant).where(inArray(roleGrant.userId, userIds));
-  if (createdVendorIds.length > 0) {
-    await dbOwner.delete(vendorBank).where(inArray(vendorBank.vendorId, createdVendorIds));
-    await dbOwner.delete(vendor).where(inArray(vendor.id, createdVendorIds));
-  }
-  await dbOwner.delete(headOfAccount).where(inArray(headOfAccount.id, [head.id]));
-  await dbOwner.delete(department).where(inArray(department.id, [deptA.id]));
-  await dbOwner.delete(company).where(inArray(company.id, [companyX.id]));
-  await dbOwner.delete(user).where(inArray(user.id, userIds));
-  await closeOwnerConnection();
 }, 60_000);
 
 describe("computed flags against the real DB (the phase-12 gate)", () => {

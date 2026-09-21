@@ -9,9 +9,18 @@ import { duplicateCheck, roleGrant, user } from "@/db/schema";
 // (lifting the application's blocked_paid warning), so this is the one
 // place that check lives rather than two copies drifting apart.
 export async function actorHoldsRole(userId: string, role: Role): Promise<boolean> {
-  const [grant] = await withActorScope(userId, (tx) =>
-    tx.select({ id: roleGrant.id }).from(roleGrant).where(and(eq(roleGrant.userId, userId), eq(roleGrant.role, role), isNull(roleGrant.revokedAt))).limit(1),
-  );
+  return withActorScope(userId, (tx) => actorHoldsRoleInTx(tx, userId, role));
+}
+
+// For a caller already inside a scoped transaction (any role's — the
+// role_grant SELECT policy always exposes a person's own rows): checks the
+// same thing without opening a second transaction just to ask.
+export async function actorHoldsRoleInTx(tx: ScopedTx, userId: string, role: Role): Promise<boolean> {
+  const [grant] = await tx
+    .select({ id: roleGrant.id })
+    .from(roleGrant)
+    .where(and(eq(roleGrant.userId, userId), eq(roleGrant.role, role), isNull(roleGrant.revokedAt)))
+    .limit(1);
   return Boolean(grant);
 }
 
@@ -64,78 +73,91 @@ type CandidateRow = {
   viewableByActor: boolean;
 };
 
-export async function checkDuplicates(
-  actorId: string,
-  role: Role,
-  params: { excludeRequestId?: string; vendorKey?: string | null; invoiceKey?: string | null; fy?: string | null; checksum?: string | null },
-): Promise<DuplicateCheckResult> {
+type DuplicateParams = {
+  excludeRequestId?: string;
+  vendorKey?: string | null;
+  invoiceKey?: string | null;
+  fy?: string | null;
+  checksum?: string | null;
+};
+
+export async function checkDuplicates(actorId: string, role: Role, params: DuplicateParams): Promise<DuplicateCheckResult> {
+  if (!params.checksum && !(params.vendorKey && params.invoiceKey && params.fy)) {
+    return { verdict: "none", match: null };
+  }
+  return withGrantScope(actorId, role, (tx) => checkDuplicatesInTx(tx, params));
+}
+
+// The check itself, for callers already inside a scoped transaction
+// (submitRequest, accountRequest fold it into the transaction they're
+// opening anyway instead of paying for a second scope). The caller's own
+// role is whatever that transaction was scoped to.
+export async function checkDuplicatesInTx(tx: ScopedTx, params: DuplicateParams): Promise<DuplicateCheckResult> {
   if (!params.checksum && !(params.vendorKey && params.invoiceKey && params.fy)) {
     return { verdict: "none", match: null };
   }
 
-  return withGrantScope(actorId, role, async (tx) => {
-    const rows = await tx.execute<{
-      request_id: string;
-      department_id: string;
-      stage: string;
-      invoice_date: string | null;
-      reference: string | null;
-      match_kind: "vendor_invoice_fy" | "file_checksum";
-      viewable_by_actor: boolean;
-    }>(sql`
-      select * from app_duplicate_check_candidates(
-        ${params.excludeRequestId ?? null},
-        ${params.vendorKey ?? null},
-        ${params.invoiceKey ?? null},
-        ${params.fy ?? null},
-        ${params.checksum ?? null}
-      )
-    `);
+  const rows = await tx.execute<{
+    request_id: string;
+    department_id: string;
+    stage: string;
+    invoice_date: string | null;
+    reference: string | null;
+    match_kind: "vendor_invoice_fy" | "file_checksum";
+    viewable_by_actor: boolean;
+  }>(sql`
+    select * from app_duplicate_check_candidates(
+      ${params.excludeRequestId ?? null},
+      ${params.vendorKey ?? null},
+      ${params.invoiceKey ?? null},
+      ${params.fy ?? null},
+      ${params.checksum ?? null}
+    )
+  `);
 
-    const candidates: CandidateRow[] = rows.map((r) => ({
-      requestId: r.request_id,
-      departmentId: r.department_id,
-      stage: r.stage,
-      invoiceDate: r.invoice_date,
-      reference: r.reference,
-      matchKind: r.match_kind,
-      viewableByActor: r.viewable_by_actor,
-    }));
+  const candidates: CandidateRow[] = rows.map((r) => ({
+    requestId: r.request_id,
+    departmentId: r.department_id,
+    stage: r.stage,
+    invoiceDate: r.invoice_date,
+    reference: r.reference,
+    matchKind: r.match_kind,
+    viewableByActor: r.viewable_by_actor,
+  }));
 
-    if (candidates.length === 0) {
-      return { verdict: "none", match: null };
+  if (candidates.length === 0) {
+    return { verdict: "none", match: null };
+  }
+
+  // Rank each candidate by its own stage's verdict priority, take the
+  // worst (highest-priority) one.
+  const best = candidates
+    .map((c) => ({ c, verdict: STAGE_VERDICT[c.stage] ?? "warned_open" }))
+    .sort((a, b) => VERDICT_PRIORITY.indexOf(a.verdict) - VERDICT_PRIORITY.indexOf(b.verdict))[0];
+
+  let viewerHint: string | null = null;
+  if (!best.c.viewableByActor) {
+    const [candidate] = await tx.execute<{ user_id: string }>(
+      sql`select user_id from app_users_with_scope(ARRAY['approver']::text[], ${best.c.departmentId}::uuid) limit 1`,
+    );
+    if (candidate) {
+      const [named] = await tx.select({ name: user.name }).from(user).where(sql`${user.id} = ${candidate.user_id}`).limit(1);
+      if (named) viewerHint = `ask ${named.name}, an approver in that department`;
     }
+  }
 
-    // Rank each candidate by its own stage's verdict priority, take the
-    // worst (highest-priority) one.
-    const best = candidates
-      .map((c) => ({ c, verdict: STAGE_VERDICT[c.stage] ?? "warned_open" }))
-      .sort((a, b) => VERDICT_PRIORITY.indexOf(a.verdict) - VERDICT_PRIORITY.indexOf(b.verdict))[0];
-
-    let viewerHint: string | null = null;
-    if (!best.c.viewableByActor) {
-      const [candidate] = await tx.execute<{ user_id: string }>(
-        sql`select user_id from app_users_with_scope(ARRAY['approver']::text[], ${best.c.departmentId}::uuid) limit 1`,
-      );
-      if (candidate) {
-        const [named] = await tx.select({ name: user.name }).from(user).where(sql`${user.id} = ${candidate.user_id}`).limit(1);
-        if (named) viewerHint = `ask ${named.name}, an approver in that department`;
-      }
-    }
-
-    return {
-      verdict: best.verdict,
-      match: {
-        requestId: best.c.requestId,
-        reference: best.c.viewableByActor ? best.c.reference : null,
-        invoiceDate: best.c.viewableByActor ? best.c.invoiceDate : null,
-        stage: best.c.viewableByActor ? best.c.stage : "unknown",
-        matchKind: best.c.matchKind,
-        viewableByActor: best.c.viewableByActor,
-        viewerHint,
-      },
-    };
-  });
+  return {
+    verdict: best.verdict,
+    match: {
+      requestId: best.c.requestId,
+      reference: best.c.viewableByActor ? best.c.reference : null,
+      invoiceDate: best.c.viewableByActor ? best.c.invoiceDate : null,
+      stage: best.c.viewableByActor ? best.c.stage : "unknown",
+      matchKind: best.c.matchKind,
+      viewableByActor: best.c.viewableByActor,
+      viewerHint,
+    },
+  };
 }
 
 export async function recordDuplicateCheck(

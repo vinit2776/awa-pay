@@ -1,9 +1,8 @@
 import "server-only";
-import { and, arrayContains, count, eq, isNull } from "drizzle-orm";
+import { and, arrayContains, count, eq, inArray, isNull } from "drizzle-orm";
 import { cache } from "react";
-import { getCurrentUser } from "@/auth/dal";
-import { getActiveRoleGrants } from "@/auth/roles";
-import { withActorScope, withGrantScope } from "@/db/runtime";
+import { getViewer } from "@/auth/dal";
+import { withGrantScope } from "@/db/runtime";
 import { query, request } from "@/db/schema";
 import type { NavCounts, NavRole } from "./nav";
 
@@ -11,14 +10,16 @@ import type { NavCounts, NavRole } from "./nav";
 // page's tiles. Every count runs through withGrantScope under the role it
 // counts for, so a badge can never show more than that queue would.
 export const getShellContext = cache(async () => {
-  const user = await getCurrentUser();
-  if (!user) return null;
+  // getViewer reads the person and their roles in one transaction (main's
+  // round-trip work) and is memoized per request, so the shell and the
+  // home page share the same read.
+  const viewer = await getViewer();
+  if (!viewer) return null;
 
-  const grants = await withActorScope(user.id, (tx) => getActiveRoleGrants(tx, user.id));
-  const roles = new Set<string>(grants.map((g) => g.role));
-  const counts = await loadNavCounts(user.id, roles);
+  const roles: ReadonlySet<string> = viewer.roles;
+  const counts = await loadNavCounts(viewer.user.id, roles);
 
-  return { user, roles, counts };
+  return { user: viewer.user, roles, counts };
 });
 
 const QUEUE_STAGE = {
@@ -53,14 +54,15 @@ async function loadNavCounts(userId: string, roles: ReadonlySet<string>): Promis
   return counts;
 }
 
-// "Needs you" for a requester: bills returned to them (stage raised) plus
-// bills with an open query directed at the requester role.
+// "Needs you" for a requester: the stages the requester owns
+// (STAGE_OWNER_ROLE — a bill returned to them, or an advance waiting for
+// its invoice) plus bills with an open query directed at the requester.
 async function countNeedsRequester(userId: string): Promise<number> {
   return withGrantScope(userId, "requester", async (tx) => {
     const returned = await tx
       .select({ id: request.id })
       .from(request)
-      .where(and(eq(request.raisedBy, userId), eq(request.stage, "raised")));
+      .where(and(eq(request.raisedBy, userId), inArray(request.stage, ["raised", "awaiting_invoice"])));
     const queried = await tx
       .selectDistinct({ id: query.requestId })
       .from(query)

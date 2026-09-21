@@ -15,8 +15,10 @@ export type Flag = { key: FlagKey; severity: "red" | "amber"; reason: string };
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 // Held requests are deliberately excluded — "otherwise the queue turns red
 // for something deliberately parked" (concept-v2.html §04) — as are the
-// three terminal stages, which are no longer waiting on anyone.
-const AGEING_EXEMPT_STAGES = new Set(["on_hold", "paid", "rejected", "withdrawn"]);
+// three terminal stages, which are no longer waiting on anyone. An advance
+// that has been paid and is waiting on the vendor's tax invoice is waiting
+// on the vendor, not on a desk, so it is exempt too.
+const AGEING_EXEMPT_STAGES = new Set(["on_hold", "paid", "rejected", "withdrawn", "awaiting_invoice"]);
 
 export type RequestForFlags = {
   id: string;
@@ -89,7 +91,17 @@ export function computeFlags(req: RequestForFlags, ctx: FlagContext): Flag[] {
 // Batched once per page load across every row the caller is about to
 // render — never per row, which is exactly the N+1 pattern request.dueDate
 // itself was added to avoid for the one field cheap enough to cache.
-export async function loadFlagContext(tx: ScopedTx, rows: RequestForFlags[], now: Date = new Date()): Promise<FlagContext> {
+//
+// `known` lets a caller that has already loaded some of this for its own
+// purposes (the request detail page reads its department and open queries
+// anyway) hand it over instead of paying for the same rows twice — each
+// avoided query is two round trips.
+export async function loadFlagContext(
+  tx: ScopedTx,
+  rows: RequestForFlags[],
+  now: Date = new Date(),
+  known: { ageingThresholdByDept?: Map<string, number>; openQueryRequestIds?: Set<string> } = {},
+): Promise<FlagContext> {
   const empty: FlagContext = {
     now,
     ageingThresholdByDept: new Map(),
@@ -102,14 +114,24 @@ export async function loadFlagContext(tx: ScopedTx, rows: RequestForFlags[], now
   const requestIds = rows.map((r) => r.id);
   const deptIds = [...new Set(rows.map((r) => r.departmentId))];
 
-  const depts = await tx.select({ id: department.id, ageingThresholdDays: department.ageingThresholdDays }).from(department).where(inArray(department.id, deptIds));
-  const ageingThresholdByDept = new Map(depts.map((d) => [d.id, d.ageingThresholdDays]));
+  const ageingThresholdByDept =
+    known.ageingThresholdByDept ??
+    new Map(
+      (await tx.select({ id: department.id, ageingThresholdDays: department.ageingThresholdDays }).from(department).where(inArray(department.id, deptIds))).map(
+        (d) => [d.id, d.ageingThresholdDays],
+      ),
+    );
 
-  const openQueryRows = await tx
-    .select({ requestId: query.requestId })
-    .from(query)
-    .where(and(inArray(query.requestId, requestIds), isNull(query.resolvedAt)));
-  const openQueryRequestIds = new Set(openQueryRows.map((q) => q.requestId));
+  const openQueryRequestIds =
+    known.openQueryRequestIds ??
+    new Set(
+      (
+        await tx
+          .select({ requestId: query.requestId })
+          .from(query)
+          .where(and(inArray(query.requestId, requestIds), isNull(query.resolvedAt)))
+      ).map((q) => q.requestId),
+    );
 
   // Repeat vendor amount, same calendar month: only requests that have
   // reached accounting ever have vendorKey set, so this naturally never
