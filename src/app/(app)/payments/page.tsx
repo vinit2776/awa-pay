@@ -23,21 +23,21 @@ function cycleSortKey(cycle: string | undefined, dueDate: string | null): [numbe
 export default async function PaymentsQueuePage() {
   const session = await verifySession();
 
-  const [requests, flagContext] = await withGrantScope(session.userId, "payer", async (tx) => {
+  // One payer-scoped transaction for the queue, its flags and the approve
+  // events that decide its order.
+  const [requests, flagContext, approveEvents] = await withGrantScope(session.userId, "payer", async (tx) => {
     const rows = await tx.select().from(request).where(eq(request.stage, "to_pay"));
-    return [rows, await loadFlagContext(tx, rows)] as const;
-  });
-
-  const requestIds = requests.map((r) => r.id);
-  const approveEvents =
-    requestIds.length === 0
-      ? []
-      : await withGrantScope(session.userId, "payer", (tx) =>
-          tx
+    const flags = await loadFlagContext(tx, rows);
+    const requestIds = rows.map((r) => r.id);
+    const approvals =
+      requestIds.length === 0
+        ? []
+        : await tx
             .select()
             .from(event)
-            .where(and(inArray(event.requestId, requestIds), eq(event.type, "request.approved"))),
-        );
+            .where(and(inArray(event.requestId, requestIds), eq(event.type, "request.approved")));
+    return [rows, flags, approvals] as const;
+  });
 
   const latestCycleByRequest = new Map<string, string>();
   for (const e of approveEvents) {
