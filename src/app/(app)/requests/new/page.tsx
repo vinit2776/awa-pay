@@ -4,6 +4,7 @@ import { withGrantScope, UnauthorizedGrantError } from "@/db/runtime";
 import { department, event, request, user } from "@/db/schema";
 import { actorHoldsRoleInTx } from "@/duplicates/duplicateCore";
 import { CaptureWizard } from "./CaptureWizard";
+import { Callout } from "./wizardUi";
 
 // A ?relink= value that isn't a UUID can't name a request; treating it as
 // absent also means the lookup below can never raise a cast error inside the
@@ -61,7 +62,7 @@ export default async function NewRequestPage({ searchParams }: PageProps<"/reque
       return (
         <div className="flex flex-1 flex-col items-center justify-center gap-2 px-4 text-center">
           <h1 className="text-xl font-semibold">Not permitted</h1>
-          <p className="text-sm text-zinc-600 dark:text-zinc-400">
+          <p className="text-base text-ink-2">
             Your account isn&apos;t set up to raise requests.
           </p>
         </div>
@@ -72,13 +73,17 @@ export default async function NewRequestPage({ searchParams }: PageProps<"/reque
   const { departments, reconsidering, canOverride } = loaded;
 
   return (
-    <div className="flex flex-1 flex-col items-center gap-6 px-4 py-8">
-      <h1 className="text-2xl font-semibold">Raise a request</h1>
+    <div className="flex flex-1 flex-col items-center gap-6 px-4 py-6">
+      <h1 className="w-full max-w-md text-base font-medium text-ink-2">Raise a request</h1>
       {reconsidering && (
-        <p className="w-full max-w-sm rounded border border-amber-400 bg-amber-50 px-3 py-2 text-sm dark:border-amber-700 dark:bg-amber-950">
-          Reconsidering {reconsidering.ref}
-          {reconsidering.declinedBy && <> — declined by {reconsidering.declinedBy}</>}. This will be a new request linked back to it.
-        </p>
+        <div className="w-full max-w-md">
+          <Callout tone="info" title={`Reconsidering ${reconsidering.ref}`}>
+            <p>
+              {reconsidering.declinedBy && <>Declined by {reconsidering.declinedBy}. </>}This will be a new request linked back to it, and it
+              goes back to the same approver.
+            </p>
+          </Callout>
+        </div>
       )}
       <CaptureWizard departments={departments} linkedRequestId={linkedRequestId} canOverrideDuplicate={canOverride} />
     </div>

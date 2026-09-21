@@ -13,7 +13,17 @@ import { StepReview } from "./StepReview";
 import { useBillCapture } from "./useBillCapture";
 import { FINAL_BILL_OPTIONS, TOTAL_STEPS, type WizardForm } from "./wizardTypes";
 import { amountToMinor, cleanAmount, isoDateInDays, minorToPlain } from "./wizardMoney";
-import { CheckIcon, StepHeader, primaryButtonClass, secondaryButtonClass } from "./wizardUi";
+import { Callout, CheckIcon, StepHeader, primaryButtonClass, secondaryButtonClass } from "./wizardUi";
+import { fieldsToConfirm, unconfirmedFields, type ExtractedField } from "@/capture/confirmFields";
+import { StageTrack } from "@/ui/StageTrack";
+
+const FIELD_NAME: Record<ExtractedField, string> = {
+  vendor: "who it is from",
+  invoiceNo: "the document number",
+  invoiceDate: "the bill date",
+  amount: "the total",
+  gstin: "the GSTIN",
+};
 
 type Outcome = { type: "sent"; ref: string; requestId: string; kind: "invoice" | "advance"; vendor: string } | { type: "queued" };
 
@@ -85,6 +95,16 @@ function WizardRun({
       })),
   });
 
+  // Fields the requester has checked, tied to the reading they checked: a
+  // retaken first page is a new reading (new attempt id), so earlier
+  // confirmations fall away with it rather than carrying over.
+  const readingKey = capture.extractionAttemptId ?? "none";
+  const [checked, setChecked] = useState<{ key: string; fields: ExtractedField[] }>({ key: "none", fields: [] });
+  const confirmed = new Set<ExtractedField>(checked.key === readingKey ? checked.fields : []);
+  function confirmField(field: ExtractedField) {
+    setChecked((prev) => ({ key: readingKey, fields: [...(prev.key === readingKey ? prev.fields : []), field] }));
+  }
+
   // Move focus to the step title whenever the step changes.
   useEffect(() => {
     if (firstRender.current) {
@@ -107,8 +127,17 @@ function WizardRun({
         return form.kind ? null : "Pick one to continue.";
       case 2:
         return hasPages ? null : "Add a photo to continue.";
-      case 3:
-        return form.vendor.trim() && totalMinor !== null ? null : "Fill in who it is from and the total.";
+      case 3: {
+        if (!form.vendor.trim() || totalMinor === null) return "Fill in who it is from and the total.";
+        // Anything the model was unsure of has to be looked at before the
+        // money questions — a confidently wrong amount is worse than a
+        // missing one (AGENTS.md, extraction).
+        const unsure = unconfirmedFields(capture.fieldConfidence, confirmed, fieldsToConfirm(form.kind ?? "invoice"));
+        if (unsure.length > 0) {
+          return `Check ${unsure.map((f) => FIELD_NAME[f]).join(", ")} against your photo, then tap “Looks right”.`;
+        }
+        return null;
+      }
       case 4: {
         if (totalMinor === null) return "Fill in who it is from and the total.";
         const total = formatMinorUnits(totalMinor);
@@ -212,13 +241,16 @@ function WizardRun({
 
   if (outcome) {
     return (
-      <div className="flex w-full max-w-sm flex-col items-center gap-5 text-center">
+      <div className="flex w-full max-w-md flex-col items-center gap-5 text-center">
         <CheckIcon />
         {outcome.type === "sent" ? (
           <>
-            <h2 className="text-2xl font-semibold">Sent to your approver</h2>
-            <p className="text-lg font-semibold">{outcome.ref}</p>
-            <p className="text-base text-zinc-600 dark:text-zinc-400">
+            <h2 className="text-2xl font-semibold tracking-tight">Sent to your approver</h2>
+            <p className="font-mono text-xl font-medium">{outcome.ref}</p>
+            <div className="w-full text-left">
+              <StageTrack stage="awaiting_approval" />
+            </div>
+            <p className="text-base text-ink-2">
               {outcome.kind === "advance"
                 ? `Once it is paid, we will remind you to attach the final bill from ${outcome.vendor}.`
                 : "You will get a message if anyone has a question."}
@@ -226,8 +258,8 @@ function WizardRun({
           </>
         ) : (
           <>
-            <h2 className="text-2xl font-semibold">Saved on this phone</h2>
-            <p className="text-base text-zinc-600 dark:text-zinc-400">
+            <h2 className="text-2xl font-semibold tracking-tight">Saved on this phone</h2>
+            <p className="text-base text-ink-2">
               No connection right now. This request is saved on this device and will send itself next time the app is open with signal.
             </p>
           </>
@@ -254,7 +286,7 @@ function WizardRun({
   const payNowMinor = paysPart && typedPayNowMinor !== null ? typedPayNowMinor : (totalMinor ?? 0);
 
   return (
-    <div ref={containerRef} className="flex w-full max-w-sm flex-col gap-6">
+    <div ref={containerRef} className="flex w-full max-w-md flex-col gap-6">
       <StepHeader step={step} total={TOTAL_STEPS} />
 
       {step === 1 && <StepKind form={form} patch={patch} error={error} />}
@@ -264,7 +296,13 @@ function WizardRun({
           form={form}
           patch={patch}
           confidence={capture.fieldConfidence}
+          confirmed={confirmed}
+          onConfirm={(field) => {
+            confirmField(field);
+            setError(null);
+          }}
           extractionNote={capture.extractionNote}
+          readingSkipped={capture.readingSkipped}
           error={error}
         />
       )}
@@ -286,9 +324,9 @@ function WizardRun({
       )}
 
       {isLastStep && offlineNow && (
-        <p className="text-base text-amber-700 dark:text-amber-400">
-          No connection — this will be saved on your phone and sent once you&apos;re back on signal.
-        </p>
+        <Callout tone="warn" title="No connection">
+          This will be saved on your phone and sent once you&apos;re back on signal.
+        </Callout>
       )}
 
       <div className="flex gap-3">

@@ -10,10 +10,17 @@ const MAX_BYTES = 15 * 1024 * 1024;
 
 type UploadedPage = { fileId: string; storageKey: string; mime: string; byteLength: number; sha256: string };
 
+// Same sizes as the raise wizard (src/app/(app)/requests/new/wizardUi.tsx):
+// this is the same low-tech requester, weeks later, so 48px inputs, 54px
+// buttons and 16px text rather than the desk screens' density.
+const inputClass =
+  "min-h-12 w-full rounded-lg border border-line bg-surface px-3 py-2 text-base text-ink focus-visible:border-accent focus-visible:outline-2 focus-visible:outline-accent-soft";
+const labelClass = "text-base font-medium";
+const focusRing = "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent";
+
 // The second half of an advance. Shown to the requester who raised it, once
 // the advance has been paid and the request is waiting on the vendor's tax
-// invoice. Same plain-language, big-target style as the raise wizard: this
-// is the same low-tech person, weeks later.
+// invoice.
 export function AttachInvoicePanel({
   requestId,
   vendor,
@@ -87,48 +94,50 @@ export function AttachInvoicePanel({
     router.refresh();
   }
 
-  const inputClass = "min-h-12 rounded border border-zinc-300 px-3 py-2 text-base dark:border-zinc-700 dark:bg-black";
-  const labelClass = "text-base font-medium";
-
   return (
-    <div className="flex flex-col gap-3 rounded border border-violet-400 bg-violet-50 p-4 dark:border-violet-700 dark:bg-violet-950">
-      <div>
-        <h2 className="text-lg font-semibold">Attach the final bill</h2>
-        <p className="text-sm text-zinc-700 dark:text-zinc-300">
-          The advance of {formatMinorUnits(paidMinor, currency)} has been paid. When {vendor ?? "the vendor"}&apos;s tax invoice arrives, add it here and the
-          balance goes to be paid.
+    <div className="flex flex-col gap-4 rounded-xl border border-warn-line bg-surface p-4 shadow-[inset_3px_0_0_var(--warn)]">
+      <div className="flex flex-col gap-1">
+        <h2 className="text-lg font-semibold tracking-tight">Attach the final bill</h2>
+        <p className="text-base text-ink-2">
+          The advance of <span className="font-mono">{formatMinorUnits(paidMinor, currency)}</span> has been paid. When {vendor ?? "the vendor"}
+          &apos;s tax invoice arrives, add it here and the balance goes to be paid.
           {expectedBy && <> You said it would come around {expectedBy}.</>}
         </p>
       </div>
 
       {error && (
-        <p role="alert" className="text-sm text-red-600 dark:text-red-400">
+        <p role="alert" className="text-base text-danger">
           {error}
         </p>
       )}
 
-      <label className="flex flex-col gap-1">
+      <label className="flex flex-col gap-1.5">
         <span className={labelClass}>Invoice number</span>
-        <input value={invoiceNo} onChange={(e) => setInvoiceNo(e.target.value)} className={inputClass} />
+        <input value={invoiceNo} onChange={(e) => setInvoiceNo(e.target.value)} className={`${inputClass} font-mono`} />
       </label>
-      <label className="flex flex-col gap-1">
+      <label className="flex flex-col gap-1.5">
         <span className={labelClass}>Invoice date</span>
-        <input type="date" value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)} className={inputClass} />
+        <input type="date" value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)} className={`${inputClass} font-mono`} />
       </label>
-      <label className="flex flex-col gap-1">
+      <label className="flex flex-col gap-1.5">
         <span className={labelClass}>Total on the invoice</span>
-        <input inputMode="decimal" value={total} onChange={(e) => setTotal(e.target.value)} className={inputClass} />
-        <span className="text-xs text-zinc-600 dark:text-zinc-400">
-          The final amount, with tax. Quoted: {formatMinorUnits(quotedMinor, currency)}.
-          {balanceMinor !== null && balanceMinor >= 0 && <> Balance to pay after the advance: {formatMinorUnits(balanceMinor, currency)}.</>}
+        <input inputMode="decimal" value={total} onChange={(e) => setTotal(e.target.value)} className={`${inputClass} font-mono tabular-nums`} />
+        <span className="text-base text-ink-2">
+          The final amount, with tax. Quoted: <span className="font-mono">{formatMinorUnits(quotedMinor, currency)}</span>.
+          {balanceMinor !== null && balanceMinor >= 0 && (
+            <>
+              {" "}
+              Balance to pay after the advance: <span className="font-mono">{formatMinorUnits(balanceMinor, currency)}</span>.
+            </>
+          )}
         </span>
       </label>
 
       <div className="flex flex-col gap-2">
         <span className={labelClass}>Photo or PDF of the invoice</span>
         {pages.length > 0 && (
-          <p className="text-sm text-green-700 dark:text-green-400">
-            {pages.length} page{pages.length === 1 ? "" : "s"} added
+          <p className="text-base font-medium text-ok">
+            ✓ {pages.length} page{pages.length === 1 ? "" : "s"} added
           </p>
         )}
         <input
@@ -146,7 +155,7 @@ export function AttachInvoicePanel({
           type="button"
           disabled={uploading}
           onClick={() => fileInputRef.current?.click()}
-          className="min-h-12 rounded border border-zinc-400 px-4 py-2 text-base disabled:opacity-50 dark:border-zinc-600"
+          className={`min-h-[54px] rounded-lg border border-line bg-surface px-4 text-base font-medium text-ink hover:bg-sunk disabled:opacity-45 ${focusRing}`}
         >
           {uploading ? "Uploading…" : pages.length === 0 ? "Add photo or PDF" : "Add another page"}
         </button>
@@ -156,7 +165,7 @@ export function AttachInvoicePanel({
         type="button"
         disabled={pending || uploading}
         onClick={() => void submit()}
-        className="min-h-14 rounded bg-black px-4 py-3 text-base font-medium text-white disabled:opacity-50 dark:bg-white dark:text-black"
+        className={`min-h-[54px] rounded-lg bg-accent px-4 text-base font-semibold text-accent-ink hover:bg-accent/90 disabled:opacity-45 ${focusRing}`}
       >
         {pending ? "Attaching…" : "Attach invoice"}
       </button>
