@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, isNull } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { closeOwnerConnection, dbOwner } from "../scripts/db-owner";
+import { cleanupFixturesForNonce } from "../scripts/fixtures";
 import { withGrantScope } from "../src/db/runtime";
 import { accounting, comment, department, event, query, request, requestFile, roleGrant, user } from "../src/db/schema";
 import { loadRequestView } from "../src/requests/requestView";
@@ -112,17 +113,11 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  const userIds = [requester.id, approver.id, dualRole.id, outsiderApprover.id, noGrants.id];
-  await dbOwner.delete(query).where(eq(query.requestId, requestId));
-  await dbOwner.delete(requestFile).where(eq(requestFile.requestId, requestId));
-  await dbOwner.delete(comment).where(eq(comment.requestId, requestId));
-  await dbOwner.delete(accounting).where(eq(accounting.requestId, requestId));
-  await dbOwner.delete(event).where(eq(event.requestId, requestId));
-  await dbOwner.delete(request).where(eq(request.id, requestId));
-  await dbOwner.delete(roleGrant).where(inArray(roleGrant.userId, userIds));
-  await dbOwner.delete(department).where(inArray(department.id, [deptA.id, deptB.id]));
-  await dbOwner.delete(user).where(inArray(user.id, userIds));
-  await closeOwnerConnection();
+  try {
+    await cleanupFixturesForNonce(dbOwner, nonce);
+  } finally {
+    await closeOwnerConnection();
+  }
 });
 
 // The exact reads the page made before, one query each, as the oracle.

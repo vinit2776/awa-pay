@@ -76,6 +76,7 @@ async function measure<T>(label: string, fn: () => Promise<T>): Promise<T> {
 
 async function main() {
   const { closeOwnerConnection, dbOwner } = await import("./db-owner");
+  const { cleanupFixturesForNonce } = await import("./fixtures");
   const rt = await import("../src/db/runtime");
   const s = await import("../src/db/schema");
   const { hashSecret } = await import("../src/auth/password");
@@ -85,7 +86,7 @@ async function main() {
   const tr = await import("../src/requests/transitions");
   const { presignPutUrl } = await import("../src/storage/r2");
   const { buildStorageKey } = await import("../src/storage/storageKey");
-  const { and, asc, desc, eq, inArray, isNull, sql } = await import("drizzle-orm");
+  const { and, asc, desc, eq, isNull, sql } = await import("drizzle-orm");
 
   const nonce = randomUUID().slice(0, 8);
   const password = "bench-password-not-real";
@@ -152,24 +153,7 @@ async function main() {
   ).catch(() => undefined);
 
   async function cleanup() {
-  const userIds = [requester.id, approver.id, accountant.id, payer.id];
-  const reqs = await dbOwner.select({ id: s.request.id }).from(s.request).where(eq(s.request.departmentId, dept.id));
-  const reqIds = reqs.map((r) => r.id);
-  if (reqIds.length) {
-    for (const t of [s.payment, s.accounting, s.event, s.requestFile, s.duplicateCheck]) {
-      await dbOwner.delete(t).where(inArray((t as unknown as { requestId: never }).requestId, reqIds));
-    }
-    await dbOwner.delete(s.request).where(inArray(s.request.id, reqIds));
-  }
-  await dbOwner.delete(s.session).where(inArray(s.session.userId, userIds));
-  await dbOwner.delete(s.loginAttempt).where(inArray(s.loginAttempt.email, [requester.email]));
-  await dbOwner.delete(s.roleGrant).where(inArray(s.roleGrant.userId, userIds));
-  await dbOwner.delete(s.vendorBank).where(eq(s.vendorBank.vendorId, vendor.id));
-  await dbOwner.delete(s.vendor).where(eq(s.vendor.id, vendor.id));
-  await dbOwner.delete(s.headOfAccount).where(eq(s.headOfAccount.id, head.id));
-  await dbOwner.delete(s.department).where(eq(s.department.id, dept.id));
-  await dbOwner.delete(s.company).where(eq(s.company.id, co.id));
-  await dbOwner.delete(s.user).where(inArray(s.user.id, userIds));
+    await cleanupFixturesForNonce(dbOwner, nonce);
   }
 
   try {

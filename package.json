@@ -13,6 +13,8 @@
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio",
     "db:seed-user": "tsx scripts/seed-user.ts",
+    "db:migrate:test": "tsx scripts/migrate-test.ts",
+    "db:cleanup-fixtures": "tsx scripts/cleanup-fixtures.ts",
     "bench:roundtrips": "tsx scripts/bench-roundtrips.ts"
   },
   "dependencies": {

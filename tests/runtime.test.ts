@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { eq, inArray, sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { closeOwnerConnection, dbOwner } from "../scripts/db-owner";
+import { cleanupFixturesForNonce } from "../scripts/fixtures";
 import {
   UnauthorizedGrantError,
   withActorScope,
@@ -64,12 +65,11 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  const userIds = [holder.id, revoked.id, nobody.id];
-  await dbOwner.delete(request).where(eq(request.id, requestId));
-  await dbOwner.delete(roleGrant).where(inArray(roleGrant.userId, userIds));
-  await dbOwner.delete(department).where(eq(department.id, dept.id));
-  await dbOwner.delete(user).where(inArray(user.id, userIds));
-  await closeOwnerConnection();
+  try {
+    await cleanupFixturesForNonce(dbOwner, nonce);
+  } finally {
+    await closeOwnerConnection();
+  }
 });
 
 describe("withGrantScope binds a role only when a live grant exists", () => {
