@@ -51,6 +51,9 @@ export const commentRelations = relations(comment, ({ one }) => ({
 export const queryRelations = relations(query, ({ one }) => ({
   request: one(request, { fields: [query.requestId], references: [request.id] }),
   raisedByUser: one(user, { fields: [query.raisedBy], references: [user.id], relationName: "query_raised_by" }),
+  // The request record shows answered queries too, with the name of whoever
+  // answered — so the answer that unfroze a request stays in its history.
+  answeredByUser: one(user, { fields: [query.answeredBy], references: [user.id], relationName: "query_answered_by" }),
 }));
 
 // Lets the app read a person and their active grants in one statement (see

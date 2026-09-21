@@ -1,4 +1,4 @@
-import { asc, desc, eq, isNull } from "drizzle-orm";
+import { asc, desc, eq } from "drizzle-orm";
 import { withViewerRole } from "@/db/runtime";
 import { company, headOfAccount, user } from "@/db/schema";
 import { loadFlagContext } from "@/flags/computeFlags";
@@ -32,10 +32,13 @@ export async function loadRequestView(userId: string, requestId: string) {
         payments: { orderBy: (p) => [asc(p.paidAt)] },
         events: { orderBy: (e) => [asc(e.at)], with: { actorUser: { columns: { name: true } } } },
         comments: { orderBy: (c) => [asc(c.at)], with: { authorUser: { columns: { name: true } } } },
+        // Every query, not only the open ones: an answered query and the
+        // answer that unfroze the request both belong in the record's
+        // history. Still one statement — openQueryRows below is derived,
+        // not a second read.
         queries: {
-          where: (q) => isNull(q.resolvedAt),
           orderBy: (q) => [asc(q.at)],
-          with: { raisedByUser: { columns: { name: true } } },
+          with: { raisedByUser: { columns: { name: true } }, answeredByUser: { columns: { name: true } } },
         },
       },
     });
@@ -59,7 +62,7 @@ export async function loadRequestView(userId: string, requestId: string) {
     // them over rather than paying for the same rows again.
     const flagContext = await loadFlagContext(tx, [req], new Date(), {
       ageingThresholdByDept: new Map(bundle.department ? [[bundle.department.id, bundle.department.ageingThresholdDays]] : []),
-      openQueryRequestIds: new Set(bundle.queries.length > 0 ? [req.id] : []),
+      openQueryRequestIds: new Set(bundle.queries.some((q) => q.resolvedAt === null) ? [req.id] : []),
     });
 
     // The accountant panel needs company/head pickers; the payer panel its
@@ -79,6 +82,12 @@ export async function loadRequestView(userId: string, requestId: string) {
 
     const bankReadiness = role === "payer" && req.stage === "to_pay" ? await readBankReadiness(tx, req.id) : null;
 
+    const queryRows = bundle.queries.map(({ raisedByUser, answeredByUser, ...q }) => ({
+      query: q,
+      raisedByName: raisedByUser?.name ?? null,
+      answeredByName: answeredByUser?.name ?? null,
+    }));
+
     return {
       role,
       req,
@@ -91,7 +100,9 @@ export async function loadRequestView(userId: string, requestId: string) {
       payments: bundle.payments,
       events: bundle.events.map(({ actorUser, ...e }) => ({ event: e, actorName: actorUser?.name ?? null })),
       comments: bundle.comments.map(({ authorUser, ...c }) => ({ comment: c, authorName: authorUser?.name ?? null })),
-      openQueryRows: bundle.queries.map(({ raisedByUser, ...q }) => ({ query: q, raisedByName: raisedByUser?.name ?? null })),
+      queryRows,
+      // Derived from the rows already in hand, not a second read.
+      openQueryRows: queryRows.filter((r) => r.query.resolvedAt === null).map(({ query: q, raisedByName }) => ({ query: q, raisedByName })),
       routedApproverName,
       flagContext,
       companies,
