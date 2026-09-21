@@ -1,5 +1,6 @@
 import { verifySession } from "@/auth/dal";
 import { DraftFlusher } from "@/capture/DraftFlusher";
+import { AppShell } from "@/ui/shell/AppShell";
 
 // The real, DB-backed auth gate — src/proxy.ts only does a cheap cookie
 // check. verifySession() is memoized per request (React cache()), so
@@ -9,7 +10,7 @@ export default async function AppLayout({ children }: LayoutProps<"/">) {
   return (
     <>
       <DraftFlusher />
-      {children}
+      <AppShell>{children}</AppShell>
     </>
   );
 }

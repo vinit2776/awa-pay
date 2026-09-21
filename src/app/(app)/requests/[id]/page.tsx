@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { renderEventSummary } from "@/events/render";
 import { computeFlags } from "@/flags/computeFlags";
-import { FlagDots } from "@/flags/FlagDots";
+import { FlagChips } from "@/ui/FlagChips";
 import { formatMinorUnits } from "@/lib/money";
 import { loadRequestView } from "@/requests/requestView";
 import { presignGetUrl } from "@/storage/r2";
@@ -95,7 +95,7 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
       <div>
         <h1 className="text-2xl font-semibold">
           {req.ref}
-          <FlagDots flags={computeFlags(req, flagContext)} />
+          <FlagChips flags={computeFlags(req, flagContext)} />
         </h1>
         <p className="text-zinc-600 dark:text-zinc-400">
           {req.vendor ?? "Unknown vendor"} · {department_?.name} · {formatMinorUnits(req.amountMinor, req.currency)}

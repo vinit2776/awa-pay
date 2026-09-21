@@ -6,11 +6,13 @@
 // group on purpose — it must render with no session at all.
 export default function OfflinePage() {
   return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-2 px-4 py-8 text-center">
-      <h1 className="text-xl font-semibold">You&apos;re offline</h1>
-      <p className="text-sm text-zinc-600 dark:text-zinc-400">
-        This page needs a connection. If you were capturing a bill, it&apos;s been saved and will send itself once you&apos;re back on signal.
-      </p>
+    <div className="flex flex-1 flex-col items-center justify-center px-4 py-10">
+      <div className="flex max-w-sm flex-col gap-2 rounded-xl border border-warn-line bg-warn-soft p-5">
+        <h1 className="text-lg font-semibold text-warn">You&apos;re offline</h1>
+        <p className="text-sm text-ink">
+          This page needs a connection. If you were capturing a bill, it&apos;s been saved on this device and will send itself once you&apos;re back on signal.
+        </p>
+      </div>
     </div>
   );
 }

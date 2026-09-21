@@ -4,7 +4,7 @@ import { verifySession } from "@/auth/dal";
 import { withGrantScope } from "@/db/runtime";
 import { request } from "@/db/schema";
 import { computeFlags, loadFlagContext } from "@/flags/computeFlags";
-import { FlagDots } from "@/flags/FlagDots";
+import { FlagChips } from "@/ui/FlagChips";
 import { formatMinorUnits } from "@/lib/money";
 
 export default async function ApprovalsPage() {
@@ -38,7 +38,7 @@ export default async function ApprovalsPage() {
                     on hold
                   </span>
                 )}
-                <FlagDots flags={computeFlags(r, flagContext)} />
+                <FlagChips flags={computeFlags(r, flagContext)} />
               </span>
               <span className="font-medium">{formatMinorUnits(r.amountMinor, r.currency)}</span>
             </Link>
