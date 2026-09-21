@@ -29,7 +29,7 @@ export async function loadRequestView(userId: string, requestId: string) {
         department: true,
         files: true,
         accounting: { orderBy: (a) => [desc(a.accountedAt)] },
-        payments: { limit: 1 },
+        payments: { orderBy: (p) => [asc(p.paidAt)] },
         events: { orderBy: (e) => [asc(e.at)], with: { actorUser: { columns: { name: true } } } },
         comments: { orderBy: (c) => [asc(c.at)], with: { authorUser: { columns: { name: true } } } },
         queries: {
@@ -86,7 +86,9 @@ export async function loadRequestView(userId: string, requestId: string) {
       bills,
       commentAttachments,
       accountingRows: bundle.accounting,
-      paymentRow: bundle.payments[0] ?? null,
+      // Every payment, oldest first: a request accepts more than one until
+      // its balance is zero (the settlement ledger).
+      payments: bundle.payments,
       events: bundle.events.map(({ actorUser, ...e }) => ({ event: e, actorName: actorUser?.name ?? null })),
       comments: bundle.comments.map(({ authorUser, ...c }) => ({ comment: c, authorName: authorUser?.name ?? null })),
       openQueryRows: bundle.queries.map(({ raisedByUser, ...q }) => ({ query: q, raisedByName: raisedByUser?.name ?? null })),

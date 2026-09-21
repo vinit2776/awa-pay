@@ -166,7 +166,7 @@ describe("loadRequestView: one transaction, same answers as the separate queries
       expect(view!.openQueryRows).toHaveLength(1);
       expect(view!.openQueryRows[0].query.question).toBe("open one");
       expect(view!.accountingRows).toEqual(expected.accounting);
-      expect(view!.paymentRow).toBeNull();
+      expect(view!.payments).toEqual([]);
       // Timestamps round-trip as Dates with sub-second precision intact.
       expect(view!.events[0].event.at).toBeInstanceOf(Date);
       expect(view!.events[0].event.at.toISOString()).toBe("2026-01-01T10:00:00.123Z");

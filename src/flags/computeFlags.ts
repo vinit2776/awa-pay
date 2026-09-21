@@ -15,8 +15,10 @@ export type Flag = { key: FlagKey; severity: "red" | "amber"; reason: string };
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 // Held requests are deliberately excluded — "otherwise the queue turns red
 // for something deliberately parked" (concept-v2.html §04) — as are the
-// three terminal stages, which are no longer waiting on anyone.
-const AGEING_EXEMPT_STAGES = new Set(["on_hold", "paid", "rejected", "withdrawn"]);
+// three terminal stages, which are no longer waiting on anyone. An advance
+// that has been paid and is waiting on the vendor's tax invoice is waiting
+// on the vendor, not on a desk, so it is exempt too.
+const AGEING_EXEMPT_STAGES = new Set(["on_hold", "paid", "rejected", "withdrawn", "awaiting_invoice"]);
 
 export type RequestForFlags = {
   id: string;
