@@ -2,7 +2,7 @@ import { and, asc, desc, eq, isNull } from "drizzle-orm";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { withGrantScope } from "@/db/runtime";
-import { accounting, comment, company, department, event, headOfAccount, payment, query, requestFile, user } from "@/db/schema";
+import { accounting, comment, company, department, event, headOfAccount, payment, query, requestFile, requestFlag, user } from "@/db/schema";
 import { renderEventSummary } from "@/events/render";
 import { computeFlags, loadFlagContext } from "@/flags/computeFlags";
 import { FlagDots } from "@/flags/FlagDots";
@@ -16,7 +16,10 @@ import { ApproverPanel } from "./ApproverPanel";
 import { AttachInvoicePanel } from "./AttachInvoicePanel";
 import { AccountantPanel } from "./AccountantPanel";
 import { ConversationPanel, type ConversationEntry } from "./ConversationPanel";
+import { FLAG_ROLES } from "@/requests/payerStates";
+import { FlagPanel, type OpenFlag } from "./FlagPanel";
 import { PayerPanel } from "./PayerPanel";
+import { PayerStatePanel } from "./PayerStatePanel";
 import { QueryPanel, type OpenQuery } from "./QueryPanel";
 import { WithdrawButton } from "./WithdrawButton";
 
@@ -30,7 +33,7 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
   }
   const { role, request: req } = resolved;
 
-  const [department_, files, commentAttachments, accountingRows, payments, events, comments, openQueryRows, routedApproverName, flagContext] = await withGrantScope(
+  const [department_, files, commentAttachments, accountingRows, payments, events, comments, openQueryRows, routedApproverName, flagContext, raisedByName, flagRows, payerStateByName] = await withGrantScope(
     session.userId,
     role,
     async (tx) => {
@@ -76,7 +79,17 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
         ? (await tx.select({ name: user.name }).from(user).where(eq(user.id, req.routedApproverId)).limit(1))[0]?.name ?? null
         : null;
       const flagCtx = await loadFlagContext(tx, [req]);
-      return [dept, bills, attachments, accountingHistory, paymentRows, eventRows, commentRows, openQueries, routedName, flagCtx];
+      const raisedByName = (await tx.select({ name: user.name }).from(user).where(eq(user.id, req.raisedBy)).limit(1))[0]?.name ?? null;
+      const flagRows = await tx
+        .select({ flag: requestFlag, raisedByName: user.name })
+        .from(requestFlag)
+        .leftJoin(user, eq(user.id, requestFlag.raisedBy))
+        .where(and(eq(requestFlag.requestId, req.id), isNull(requestFlag.clearedAt)))
+        .orderBy(asc(requestFlag.raisedAt));
+      const payerStateByName = req.payerStateBy
+        ? (await tx.select({ name: user.name }).from(user).where(eq(user.id, req.payerStateBy)).limit(1))[0]?.name ?? null
+        : null;
+      return [dept, bills, attachments, accountingHistory, paymentRows, eventRows, commentRows, openQueries, routedName, flagCtx, raisedByName, flagRows, payerStateByName];
     },
   );
 
@@ -105,6 +118,14 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
     directedAt: q.directedAt,
     raisedByName: raisedByName ?? "Former user",
     at: q.at.toISOString(),
+  }));
+
+  const openFlags: OpenFlag[] = flagRows.map(({ flag, raisedByName: n }) => ({
+    id: flag.id,
+    reason: flag.reason,
+    raisedByName: n ?? "Former user",
+    raisedAsRole: flag.raisedAsRole,
+    at: flag.raisedAt.toISOString(),
   }));
 
   const latestAccounting = accountingRows[0] ?? null;
@@ -163,6 +184,8 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
         <p className="text-sm text-zinc-500 dark:text-zinc-500">
           stage: {req.stage.replace(/_/g, " ")}
           {req.revision > 1 && ` · revision ${req.revision}`}
+          {req.payerState === "in_progress" && " · payment in progress"}
+          {req.payerState === "on_hold" && ` · on hold with payer until ${req.payerReviewOn}`}
         </p>
         {(isAdvance || req.payNowMinor !== null) && (
           <p className="mt-2 rounded bg-violet-50 px-3 py-2 text-sm text-violet-900 dark:bg-violet-950 dark:text-violet-200">
@@ -190,7 +213,26 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
         </p>
       )}
 
-      {req.note && <p className="text-sm">{req.note}</p>}
+      <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 rounded border border-zinc-200 px-3 py-2 text-sm dark:border-zinc-800">
+        <dt className="text-zinc-500">Raised by</dt>
+        <dd>{raisedByName ?? "Former user"}</dd>
+        <dt className="text-zinc-500">Raised on</dt>
+        <dd>{req.createdAt.toLocaleString()}</dd>
+        <dt className="text-zinc-500">Bill no.</dt>
+        <dd>{req.invoiceNo ?? "—"}</dd>
+        <dt className="text-zinc-500">Bill date</dt>
+        <dd>{req.invoiceDate ?? "—"}</dd>
+        {req.gstinOnBill && (
+          <>
+            <dt className="text-zinc-500">GSTIN on bill</dt>
+            <dd>{req.gstinOnBill}</dd>
+          </>
+        )}
+        <dt className="text-zinc-500">Requester&apos;s note</dt>
+        <dd>{req.note ?? <span className="text-zinc-500">None</span>}</dd>
+      </dl>
+
+      <FlagPanel requestId={req.id} flags={openFlags} canAct={FLAG_ROLES.includes(role)} />
 
       {(latestAccounting || payments.length > 0) && (
         <div className="flex flex-col gap-1 text-sm text-zinc-600 dark:text-zinc-400">
@@ -269,7 +311,17 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
       {role === "accountant" && req.stage === "with_accounts" && (
         <AccountantPanel requestId={req.id} companies={companies} heads={heads} vendorNameHint={req.vendor} canOverrideDuplicate={canOverrideDuplicate} />
       )}
-      {role === "payer" && req.stage === "to_pay" && bankReadiness && (
+      {role === "payer" && req.stage === "to_pay" && (
+        <PayerStatePanel
+          requestId={req.id}
+          state={req.payerState}
+          reason={req.payerStateReason}
+          reviewOn={req.payerReviewOn}
+          since={req.payerStateAt?.toISOString() ?? null}
+          byName={payerStateByName}
+        />
+      )}
+      {role === "payer" && req.stage === "to_pay" && req.payerState !== "on_hold" && bankReadiness && (
         <PayerPanel
           requestId={req.id}
           bankAccountsJson={companyForPayer?.bankAccounts ?? []}

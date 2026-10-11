@@ -110,6 +110,18 @@ export function renderEventSummary(event: RenderableEvent): EventSummary {
     }
     case "request.query_answered":
       return { icon: "✓", label: "Query answered", detail: str("answer") };
+    case "request.payment_in_progress":
+      return { icon: "◔", label: "Payment marked in progress", detail: str("note") };
+    case "request.payment_in_progress_cleared":
+      return { icon: "·", label: "In-progress mark cleared", detail: "payment did not go through" };
+    case "request.payer_held":
+      return { icon: "⏸", label: "Held by payer", detail: `${str("reason")} · review on ${str("reviewOn")}` };
+    case "request.payer_hold_released":
+      return { icon: "▶", label: "Payer hold released", detail: "" };
+    case "request.flagged":
+      return { icon: "⚑", label: "Flagged", detail: str("reason") };
+    case "request.flag_cleared":
+      return { icon: "·", label: "Flag cleared", detail: "" };
     case "request.nudged":
       return { icon: "◔", label: "Nudged", detail: `${str("toRole")} · "any update?"` };
     case "vendor.created": {

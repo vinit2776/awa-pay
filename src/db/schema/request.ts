@@ -14,7 +14,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { company } from "./company";
 import { department } from "./department";
-import { holdSubReasonEnum, requestKindEnum, requestStageEnum } from "./enums";
+import { holdSubReasonEnum, payerStateEnum, requestKindEnum, requestStageEnum } from "./enums";
 import { user } from "./user";
 
 // Flags (ageing/query/due-date/repeat-amount/bank-changed, phase 12) are
@@ -82,6 +82,15 @@ export const request = pgTable(
     closeReason: text("close_reason"),
     holdReviewOn: date("hold_review_on"),
     holdSubReason: holdSubReasonEnum("hold_sub_reason"),
+    // The payer's own working state inside to_pay (see payerStateEnum).
+    // All NULL when the payer has set nothing. payerReviewOn is only
+    // meaningful for on_hold; payerStateReason is required for on_hold and
+    // optional for in_progress. Cleared by pay, release and return.
+    payerState: payerStateEnum("payer_state"),
+    payerStateReason: text("payer_state_reason"),
+    payerReviewOn: date("payer_review_on"),
+    payerStateAt: timestamp("payer_state_at", { withTimezone: true }),
+    payerStateBy: uuid("payer_state_by").references(() => user.id),
     // Cached/derived, set by the account transition (src/requests/transitions.ts)
     // — same pattern as `stage` itself: the accounting row is the truth,
     // this is what keeps the payer's queue and RLS company-scoping fast

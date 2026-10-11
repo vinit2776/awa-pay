@@ -78,6 +78,11 @@ const TRANSITIONS: Record<
   attachInvoice: { requiredRole: "requester", fromStages: ["awaiting_invoice"], toStage: "to_pay", eventType: "request.invoice_attached" },
 };
 
+// Written by every transition that leaves to_pay or settles money in it, in
+// the same UPDATE as the stage change, because request_payer_state_shape_check
+// (0026) refuses a payer state on any other stage.
+const NO_PAYER_STATE = { payerState: null, payerStateReason: null, payerReviewOn: null, payerStateAt: null, payerStateBy: null } as const;
+
 export type TransitionResult =
   | { ok: true }
   | { ok: false; error: string; duplicate?: { match: DuplicateMatch; verdict: DuplicateVerdict } };
@@ -141,6 +146,17 @@ async function runTransition(
       return { ok: false, error: `This request is no longer in a stage "${name}" can act on.` };
     }
 
+    // The payer's own working state (payerStates.ts) lives only inside
+    // to_pay. Two combinations are unsafe and refused with a message that
+    // says what to do instead: paying a request the payer parked, and
+    // sending back to accounts a request whose money is already moving.
+    if (name === "pay" && req.payerState === "on_hold") {
+      return { ok: false, error: "You put this request on hold. Release the hold before recording a payment." };
+    }
+    if (name === "returnToAccounts" && req.payerState === "in_progress") {
+      return { ok: false, error: "A payment is marked in progress. Record it, or clear the in-progress mark, before returning this to accounts." };
+    }
+
     const resolvedPatch = typeof patch === "function" ? await patch(tx, req) : patch;
 
     // Deliberately one UPDATE, not two. request_update's RLS policy (for
@@ -152,7 +168,7 @@ async function runTransition(
     // needs to change belongs in this single combined SET.
     await tx
       .update(request)
-      .set({ stage: spec.toStage, ...resolvedPatch, updatedAt: new Date() })
+      .set({ stage: spec.toStage, ...(spec.fromStages.includes("to_pay") ? NO_PAYER_STATE : {}), ...resolvedPatch, updatedAt: new Date() })
       .where(eq(request.id, req.id));
 
     const { objectType, objectId, after, eventType } = await buildAfter(tx, req);

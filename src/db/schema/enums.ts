@@ -43,6 +43,14 @@ export const holdSubReasonEnum = pgEnum("hold_sub_reason", [
   "service_not_rendered",
 ]);
 
+// What the payer has set on a request that is still in to_pay. Deliberately
+// not stages: the stage names who owns the request, and the payer owns it
+// either way. in_progress: the payment has been started at the bank but no
+// UTR is back yet. on_hold: the payer has parked it (funds, a frozen
+// account), distinct from the approver's vendor-issue hold, which has its
+// own stage and sub-reasons.
+export const payerStateEnum = pgEnum("payer_state", ["in_progress", "on_hold"]);
+
 export const requestFileKindEnum = pgEnum("request_file_kind", ["bill", "payment_advice", "comment_attachment"]);
 
 export const vendorDocumentKindEnum = pgEnum("vendor_document_kind", [

@@ -1,6 +1,6 @@
 import { and, desc, inArray, isNull } from "drizzle-orm";
 import type { ScopedTx } from "@/db/runtime";
-import { accounting, department, query, request, vendorBank } from "@/db/schema";
+import { accounting, department, query, request, requestFlag, vendorBank } from "@/db/schema";
 
 // "Flags are computed, not set by hand" (concept-v2.html §07): ageing past
 // the department's threshold, an unanswered query, a due date within 48
@@ -9,7 +9,7 @@ import { accounting, department, query, request, vendorBank } from "@/db/schema"
 // (bar dueDate itself, cached on request — see request.ts) is computed
 // fresh here, never stored, so a flag can never go stale independently of
 // the row it describes.
-export type FlagKey = "ageing" | "unanswered_query" | "due_soon" | "repeat_amount" | "bank_changed";
+export type FlagKey = "ageing" | "unanswered_query" | "due_soon" | "repeat_amount" | "bank_changed" | "manual";
 export type Flag = { key: FlagKey; severity: "red" | "amber"; reason: string };
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -29,6 +29,10 @@ export type RequestForFlags = {
   vendorKey: string | null;
   amountMinor: number;
   invoiceDate: string | null;
+  // The payer's own working state (payerStates.ts). A payer hold is
+  // deliberate parking, so like the approver's hold it exempts the request
+  // from ageing; "in progress" does not, since money is still owed.
+  payerState?: "in_progress" | "on_hold" | null;
 };
 
 export type FlagContext = {
@@ -37,6 +41,9 @@ export type FlagContext = {
   openQueryRequestIds: Set<string>;
   repeatAmountRequestIds: Set<string>;
   bankChangedRequestIds: Set<string>;
+  // Reasons of each request's open manual flags (request_flag). Optional so
+  // a hand-built context for a pure test needn't mention it.
+  manualFlagReasons?: Map<string, string[]>;
 };
 
 // Pure: no I/O, so every flag decision is directly testable against
@@ -46,7 +53,7 @@ export type FlagContext = {
 export function computeFlags(req: RequestForFlags, ctx: FlagContext): Flag[] {
   const flags: Flag[] = [];
 
-  if (!AGEING_EXEMPT_STAGES.has(req.stage)) {
+  if (!AGEING_EXEMPT_STAGES.has(req.stage) && req.payerState !== "on_hold") {
     const threshold = ctx.ageingThresholdByDept.get(req.departmentId);
     if (threshold != null) {
       const days = Math.floor((ctx.now.getTime() - req.createdAt.getTime()) / MS_PER_DAY);
@@ -85,6 +92,12 @@ export function computeFlags(req: RequestForFlags, ctx: FlagContext): Flag[] {
     flags.push({ key: "bank_changed", severity: "red", reason: "This vendor's bank details haven't been verified since they were last entered or changed" });
   }
 
+  // A person said so. Always red: a human looked and something is off, which
+  // is a stronger signal than any computed heuristic above.
+  for (const reason of ctx.manualFlagReasons?.get(req.id) ?? []) {
+    flags.push({ key: "manual", severity: "red", reason: `Flagged: ${reason}` });
+  }
+
   return flags;
 }
 
@@ -98,6 +111,7 @@ export async function loadFlagContext(tx: ScopedTx, rows: RequestForFlags[], now
     openQueryRequestIds: new Set(),
     repeatAmountRequestIds: new Set(),
     bankChangedRequestIds: new Set(),
+    manualFlagReasons: new Map(),
   };
   if (rows.length === 0) return empty;
 
@@ -167,5 +181,13 @@ export async function loadFlagContext(tx: ScopedTx, rows: RequestForFlags[], now
     }
   }
 
-  return { now, ageingThresholdByDept, openQueryRequestIds, repeatAmountRequestIds, bankChangedRequestIds };
+  const openFlags = await tx
+    .select({ requestId: requestFlag.requestId, reason: requestFlag.reason })
+    .from(requestFlag)
+    .where(and(inArray(requestFlag.requestId, requestIds), isNull(requestFlag.clearedAt)))
+    .orderBy(requestFlag.raisedAt);
+  const manualFlagReasons = new Map<string, string[]>();
+  for (const f of openFlags) manualFlagReasons.set(f.requestId, [...(manualFlagReasons.get(f.requestId) ?? []), f.reason]);
+
+  return { now, ageingThresholdByDept, openQueryRequestIds, repeatAmountRequestIds, bankChangedRequestIds, manualFlagReasons };
 }

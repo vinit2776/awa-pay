@@ -43,6 +43,16 @@ import {
   type PaymentMode,
   type TransitionResult,
 } from "@/requests/transitions";
+import {
+  clearManualFlag,
+  clearPaymentInProgress,
+  holdAsPayer,
+  markPaymentInProgress,
+  raiseManualFlag,
+  releasePayerHold,
+  type FlagResult,
+  type PayerStateResult,
+} from "@/requests/payerStates";
 import { mintUploadSlot, type UploadSlotResult } from "@/storage/uploadSlot";
 import {
   insertVendorBankAsPayer,
@@ -281,4 +291,45 @@ export async function sendNudgeAction(requestId: string): Promise<NudgeResult> {
     after(() => notifyNudge(session.userId, result.role, requestId, result.toRole));
   }
   return result;
+}
+
+// The payer's working state and manual flags. No notifications yet: these
+// change what a desk sees on the record and in the queues, not who owns the
+// request, so nobody's queue gains or loses a row.
+async function afterPayerChange<T extends { ok: boolean }>(requestId: string, result: T): Promise<T> {
+  if (result.ok) {
+    revalidatePath(`/requests/${requestId}`);
+    revalidatePath("/payments");
+  }
+  return result;
+}
+
+export async function markPaymentInProgressAction(requestId: string, input: { note?: string }): Promise<PayerStateResult> {
+  const session = await verifySession();
+  return afterPayerChange(requestId, await markPaymentInProgress(session.userId, requestId, input, await getClientMeta()));
+}
+
+export async function clearPaymentInProgressAction(requestId: string): Promise<PayerStateResult> {
+  const session = await verifySession();
+  return afterPayerChange(requestId, await clearPaymentInProgress(session.userId, requestId, await getClientMeta()));
+}
+
+export async function holdAsPayerAction(requestId: string, input: { reason: string; reviewOn: string }): Promise<PayerStateResult> {
+  const session = await verifySession();
+  return afterPayerChange(requestId, await holdAsPayer(session.userId, requestId, input, await getClientMeta()));
+}
+
+export async function releasePayerHoldAction(requestId: string): Promise<PayerStateResult> {
+  const session = await verifySession();
+  return afterPayerChange(requestId, await releasePayerHold(session.userId, requestId, await getClientMeta()));
+}
+
+export async function raiseManualFlagAction(requestId: string, input: { reason: string }): Promise<FlagResult> {
+  const session = await verifySession();
+  return afterPayerChange(requestId, await raiseManualFlag(session.userId, requestId, input, await getClientMeta()));
+}
+
+export async function clearManualFlagAction(requestId: string, flagId: string): Promise<FlagResult> {
+  const session = await verifySession();
+  return afterPayerChange(requestId, await clearManualFlag(session.userId, flagId, await getClientMeta()));
 }

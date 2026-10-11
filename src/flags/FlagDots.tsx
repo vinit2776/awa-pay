@@ -11,8 +11,8 @@ export function FlagDots({ flags }: { flags: Flag[] }) {
   if (flags.length === 0) return null;
   return (
     <span className="ml-2 inline-flex items-center gap-1 align-middle">
-      {flags.map((f) => (
-        <span key={f.key} title={f.reason} className={`inline-block h-[7px] w-[7px] rounded-full ${DOT_CLASS[f.severity]}`} />
+      {flags.map((f, i) => (
+        <span key={`${f.key}-${i}`} title={f.reason} className={`inline-block h-[7px] w-[7px] rounded-full ${DOT_CLASS[f.severity]}`} />
       ))}
     </span>
   );
