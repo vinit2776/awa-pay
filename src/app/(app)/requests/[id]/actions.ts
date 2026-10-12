@@ -189,7 +189,11 @@ export async function createVendorAction(
   // Hardcoded, not resolved from role_grant: AccountantPanel (the only
   // caller) only ever renders for role === "accountant" — see
   // src/app/(app)/requests/[id]/page.tsx.
-  return createVendor(session.userId, "accountant", requestId, input, meta);
+  const result = await createVendor(session.userId, "accountant", requestId, input, meta);
+  // The create writes a "Vendor created" event to this request's trail, so
+  // the record has to re-render or the trail stays stale until a reload.
+  if (result.ok) revalidatePath(`/requests/${requestId}`);
+  return result;
 }
 
 // Bank details captured at the accounts desk for a vendor that has none, or
@@ -198,7 +202,11 @@ export async function createVendorAction(
 export async function addVendorBankAction(requestId: string, vendorId: string, input: VendorBankInput): Promise<SetVendorBankResult> {
   const session = await verifySession();
   const result = await addVendorBankForRequest(session.userId, requestId, vendorId, input, await getClientMeta());
-  if (result.ok) revalidatePath(`/vendors/${vendorId}`);
+  if (result.ok) {
+    revalidatePath(`/vendors/${vendorId}`);
+    // Same reason as createVendorAction: the bank change is in this request's trail.
+    revalidatePath(`/requests/${requestId}`);
+  }
   return result;
 }
 
