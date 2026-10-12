@@ -60,7 +60,7 @@ import {
   type InsertVendorBankAsPayerResult,
   type VerifyVendorBankResult,
 } from "@/vendors/verifyCore";
-import { createVendor, searchVendors, type CreateVendorResult, type VendorSummary } from "@/vendors/vendorsCore";
+import { addVendorBankForRequest, createVendor, searchVendors, type CreateVendorResult, type SetVendorBankResult, type VendorBankInput, type VendorSummary } from "@/vendors/vendorsCore";
 
 async function getClientMeta(): Promise<{ ip: string; userAgent: string | undefined }> {
   const h = await headers();
@@ -182,7 +182,7 @@ export async function searchVendorsAction(term: string): Promise<VendorSummary[]
 
 export async function createVendorAction(
   requestId: string,
-  input: { name: string; gstin?: string | null; pan?: string | null },
+  input: { name: string; gstin?: string | null; pan?: string | null; bank?: VendorBankInput | null },
 ): Promise<CreateVendorResult> {
   const session = await verifySession();
   const meta = await getClientMeta();
@@ -190,6 +190,16 @@ export async function createVendorAction(
   // caller) only ever renders for role === "accountant" — see
   // src/app/(app)/requests/[id]/page.tsx.
   return createVendor(session.userId, "accountant", requestId, input, meta);
+}
+
+// Bank details captured at the accounts desk for a vendor that has none, or
+// to replace what is on file. The new record is unverified: the payer
+// verifies it against the bill before any payment.
+export async function addVendorBankAction(requestId: string, vendorId: string, input: VendorBankInput): Promise<SetVendorBankResult> {
+  const session = await verifySession();
+  const result = await addVendorBankForRequest(session.userId, requestId, vendorId, input, await getClientMeta());
+  if (result.ok) revalidatePath(`/vendors/${vendorId}`);
+  return result;
 }
 
 export async function returnToApproverAction(requestId: string, input: { reason: string }): Promise<TransitionResult> {
