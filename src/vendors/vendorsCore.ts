@@ -1,4 +1,4 @@
-import { and, desc, eq, ilike, isNull, or } from "drizzle-orm";
+import { and, desc, eq, ilike, inArray, isNull, or } from "drizzle-orm";
 import { type Role, type ScopedTx, withGrantScope } from "@/db/runtime";
 import { accounting, payment, request, vendor, vendorBank, vendorDocument } from "@/db/schema";
 import { appendEvent, type Meta } from "@/events/append";
@@ -29,7 +29,51 @@ function isUniqueViolation(err: unknown): boolean {
   return Boolean(cause && typeof cause === "object" && "code" in cause && (cause as { code?: unknown }).code === UNIQUE_VIOLATION);
 }
 
-export type VendorSummary = { id: string; name: string; gstin: string | null; pan: string | null };
+// What the accounts desk shows about a vendor's current bank record: enough
+// to recognise it and know whether the payer still has to verify it. Never
+// the full account number, which stays encrypted in vendor_bank.
+export type VendorBankSummary = {
+  beneficiaryName: string;
+  accountNumberLast4: string;
+  ifsc: string;
+  branch: string | null;
+  verified: boolean;
+};
+
+export type VendorSummary = { id: string; name: string; gstin: string | null; pan: string | null; bank: VendorBankSummary | null };
+
+export type VendorBankInput = { beneficiaryName: string; accountNumber: string; ifsc: string; branch: string | null; effectiveFrom: string };
+
+// One place for "is this a bank record we'd accept", shared by every path
+// that writes one (the vendor page, vendor creation, the accounts desk).
+function validateBank(bank: VendorBankInput): string | null {
+  if (!bank.beneficiaryName.trim()) return "A beneficiary name is required.";
+  if (!/^\d{4,20}$/.test(bank.accountNumber)) return "Enter a valid account number.";
+  if (!bank.ifsc.trim()) return "An IFSC code is required.";
+  return null;
+}
+
+// Supersede the vendor's current bank row, if any, and insert the new one.
+// The new row is always unverified: verification is the payer's, against the
+// bill. Caller holds the transaction and has already taken lockVendorMutex.
+async function writeCurrentBank(tx: ScopedTx, actorId: string, vendorId: string, bank: VendorBankInput): Promise<void> {
+  await tx
+    .update(vendorBank)
+    .set({ supersededAt: new Date() })
+    .where(and(eq(vendorBank.vendorId, vendorId), isNull(vendorBank.supersededAt)));
+
+  await tx.insert(vendorBank).values({
+    vendorId,
+    beneficiaryName: bank.beneficiaryName.trim(),
+    accountNumberEncrypted: encryptSecret(bank.accountNumber),
+    accountNumberLast4: bank.accountNumber.slice(-4),
+    ifsc: bank.ifsc.trim().toUpperCase(),
+    branch: bank.branch,
+    effectiveFrom: bank.effectiveFrom,
+    enteredBy: actorId,
+    enteredAsRole: "accountant",
+  });
+}
 
 // Matches by name (case-insensitive substring — what a human types from a
 // bill) or an exact GSTIN/PAN hit (the identity fields the partial unique
@@ -37,14 +81,32 @@ export type VendorSummary = { id: string; name: string; gstin: string | null; pa
 export async function searchVendors(actorId: string, role: Role, term: string): Promise<VendorSummary[]> {
   const trimmed = term.trim();
   if (!trimmed) return [];
-  return withGrantScope(actorId, role, (tx) =>
-    tx
+  return withGrantScope(actorId, role, async (tx) => {
+    const matches = await tx
       .select({ id: vendor.id, name: vendor.name, gstin: vendor.gstin, pan: vendor.pan })
       .from(vendor)
       .where(and(eq(vendor.active, true), or(ilike(vendor.name, `%${trimmed}%`), eq(vendor.gstin, trimmed), eq(vendor.pan, trimmed))))
       .orderBy(desc(vendor.createdAt))
-      .limit(10),
-  );
+      .limit(10);
+    if (matches.length === 0) return [];
+
+    // One batched lookup of each match's current bank, never one per row.
+    const banks = await tx
+      .select()
+      .from(vendorBank)
+      .where(and(inArray(vendorBank.vendorId, matches.map((m) => m.id)), isNull(vendorBank.supersededAt)));
+    const bankByVendor = new Map(banks.map((b) => [b.vendorId, b]));
+
+    return matches.map((m) => {
+      const b = bankByVendor.get(m.id);
+      return {
+        ...m,
+        bank: b
+          ? { beneficiaryName: b.beneficiaryName, accountNumberLast4: b.accountNumberLast4, ifsc: b.ifsc, branch: b.branch, verified: b.verifiedAt !== null }
+          : null,
+      };
+    });
+  });
 }
 
 export type CreateVendorResult = { ok: true; id: string } | { ok: false; error: string };
@@ -54,10 +116,10 @@ export type CreateVendorResult = { ok: true; id: string } | { ok: false; error: 
 // than silently narrowing it back down to one role.
 export type VendorWriterRole = "accountant" | "super_admin";
 
-// Minimal create: a name and an optional GSTIN-or-PAN. Full KYC, bank
-// details and documents happen on the vendor's own /vendors/[id] page —
-// never inline here, so an accountant is never blocked mid-bill by a long
-// form. requestId is the request being accounted when this vendor was
+// Minimal create: a name, an optional GSTIN-or-PAN, and optionally the bank
+// details. Full KYC and documents happen on the vendor's own /vendors/[id]
+// page, never inline here, so an accountant is never blocked mid-bill by a
+// long form. requestId is the request being accounted when this vendor was
 // created — always present in phase 9's only call site (AccountantPanel's
 // inline create), and is what gives this event a home in that request's
 // own trail.
@@ -65,10 +127,17 @@ export async function createVendor(
   actorId: string,
   role: VendorWriterRole,
   requestId: string,
-  params: { name: string; gstin?: string | null; pan?: string | null },
+  params: { name: string; gstin?: string | null; pan?: string | null; bank?: VendorBankInput | null },
   meta: Meta,
 ): Promise<CreateVendorResult> {
   if (!params.name.trim()) return { ok: false, error: "A vendor name is required." };
+  // Bank details given at creation are validated up front so a bad account
+  // number never leaves a vendor created without the bank the accountant
+  // typed in: the vendor and its bank commit together or not at all.
+  if (params.bank) {
+    const bankError = validateBank(params.bank);
+    if (bankError) return { ok: false, error: bankError };
+  }
 
   // The try/catch wraps the whole transaction, not just the INSERT
   // statement inside it — postgres.js tracks a failed query's error
@@ -101,11 +170,26 @@ export async function createVendor(
           objectType: "vendor",
           objectId: row.id,
           before: {},
-          after: { name: params.name.trim(), gstin: params.gstin || null, pan: params.pan || null },
+          // ONE event, bank included. appendEvent finds the chain's previous
+          // link by ordering on event.at, and every event in a transaction
+          // shares the transaction's timestamp, so a second event for the
+          // same request in this transaction could pick the wrong
+          // predecessor and fork the hash chain.
+          after: {
+            name: params.name.trim(),
+            gstin: params.gstin || null,
+            pan: params.pan || null,
+            bank: params.bank ? bankSummaryForEvent(params.bank) : null,
+          },
           reason: null,
         },
         meta,
       );
+
+      if (params.bank) {
+        await lockVendorMutex(tx, row.id);
+        await writeCurrentBank(tx, actorId, row.id, params.bank);
+      }
 
       return { ok: true, id: row.id };
     });
@@ -197,35 +281,55 @@ export type SetVendorBankResult = { ok: true } | { ok: false; error: string };
 // (entered_by, effective_from, superseded_at), matching how vendor_bank
 // is described in the brief (concept-v2.html §15) — no separate event
 // row duplicates it.
-export async function setVendorBank(
-  actorId: string,
-  vendorId: string,
-  params: { beneficiaryName: string; accountNumber: string; ifsc: string; branch: string | null; effectiveFrom: string },
-): Promise<SetVendorBankResult> {
-  if (!params.beneficiaryName.trim()) return { ok: false, error: "A beneficiary name is required." };
-  if (!/^\d{4,20}$/.test(params.accountNumber)) return { ok: false, error: "Enter a valid account number." };
-  if (!params.ifsc.trim()) return { ok: false, error: "An IFSC code is required." };
+export async function setVendorBank(actorId: string, vendorId: string, params: VendorBankInput): Promise<SetVendorBankResult> {
+  const bankError = validateBank(params);
+  if (bankError) return { ok: false, error: bankError };
 
   return withGrantScope(actorId, "accountant", async (tx: ScopedTx) => {
     await lockVendorMutex(tx, vendorId);
+    await writeCurrentBank(tx, actorId, vendorId, params);
+    return { ok: true };
+  });
+}
 
-    await tx
-      .update(vendorBank)
-      .set({ supersededAt: new Date() })
-      .where(and(eq(vendorBank.vendorId, vendorId), isNull(vendorBank.supersededAt)));
+function bankSummaryForEvent(bank: VendorBankInput) {
+  return { ifsc: bank.ifsc.trim().toUpperCase(), accountNumberLast4: bank.accountNumber.slice(-4), beneficiaryName: bank.beneficiaryName.trim() };
+}
 
-    await tx.insert(vendorBank).values({
-      vendorId,
-      beneficiaryName: params.beneficiaryName.trim(),
-      accountNumberEncrypted: encryptSecret(params.accountNumber),
-      accountNumberLast4: params.accountNumber.slice(-4),
-      ifsc: params.ifsc.trim().toUpperCase(),
-      branch: params.branch,
-      effectiveFrom: params.effectiveFrom,
-      enteredBy: actorId,
-      enteredAsRole: "accountant",
-    });
+function bankAddedEvent(requestId: string, actorId: string, vendorId: string, bank: VendorBankInput) {
+  return {
+    requestId,
+    actor: actorId,
+    roleAtTime: "accountant",
+    type: "vendor.bank_added",
+    objectType: "vendor",
+    objectId: vendorId,
+    before: {},
+    after: bankSummaryForEvent(bank),
+    reason: null,
+  };
+}
 
+// The accounts desk's version of setVendorBank: the same supersede-and-insert,
+// but made while accounting a specific request, so the change lands in that
+// request's trail in the same transaction (AGENTS.md rule 3). The vendor page
+// keeps calling setVendorBank, which has no request to attach an event to.
+export async function addVendorBankForRequest(
+  actorId: string,
+  requestId: string,
+  vendorId: string,
+  params: VendorBankInput,
+  meta: Meta,
+): Promise<SetVendorBankResult> {
+  const bankError = validateBank(params);
+  if (bankError) return { ok: false, error: bankError };
+
+  return withGrantScope(actorId, "accountant", async (tx: ScopedTx) => {
+    await lockVendorMutex(tx, vendorId);
+    const [req] = await tx.select({ id: request.id }).from(request).where(eq(request.id, requestId)).limit(1);
+    if (!req) return { ok: false, error: "Request not found." };
+    await writeCurrentBank(tx, actorId, vendorId, params);
+    await appendEvent(tx, bankAddedEvent(requestId, actorId, vendorId, params), meta);
     return { ok: true };
   });
 }

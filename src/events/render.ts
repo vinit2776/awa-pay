@@ -56,7 +56,8 @@ export function renderEventSummary(event: RenderableEvent): EventSummary {
           : cycle === "immediate"
             ? "cycle set to immediate"
             : "cycle left to payer's discretion";
-      return { icon: "✓", label: "Approved", detail };
+      const approverNote = str("noteToAccountsAndPayer");
+      return { icon: "✓", label: "Approved", detail: approverNote ? `${detail} · note: ${approverNote}` : detail };
     }
     case "request.returned":
       return { icon: "!", label: "Returned for correction", detail: str("reason") };
@@ -126,8 +127,13 @@ export function renderEventSummary(event: RenderableEvent): EventSummary {
       return { icon: "◔", label: "Nudged", detail: `${str("toRole")} · "any update?"` };
     case "vendor.created": {
       const gstin = str("gstin");
-      return { icon: "✓", label: "Vendor created", detail: gstin ? `${str("name")} · ${gstin}` : str("name") };
+      const bank = typeof after.bank === "object" && after.bank !== null ? (after.bank as Record<string, unknown>) : null;
+      const parts = [gstin ? `${str("name")} · ${gstin}` : str("name")];
+      if (bank) parts.push(`bank ${String(bank.ifsc ?? "")} · ••••${String(bank.accountNumberLast4 ?? "")} · awaiting payer verification`);
+      return { icon: "✓", label: "Vendor created", detail: parts.join(" · ") };
     }
+    case "vendor.bank_added":
+      return { icon: "✓", label: "Vendor bank added", detail: `${str("beneficiaryName")} · ${str("ifsc")} · ••••${str("accountNumberLast4")} · awaiting payer verification` };
     case "vendor.bank_verified":
       return { icon: "✓", label: "Vendor bank verified", detail: `${str("ifsc")} · ••••${str("accountNumberLast4")}` };
     default:

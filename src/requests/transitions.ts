@@ -303,7 +303,11 @@ export async function approveRequest(
     requestId,
     meta,
     null,
-    { note: params.noteToAccountsAndPayer, dueDate: params.cycle === "dated" ? params.dueDate : null },
+    // The approver's note to accounts and the payer lives in this event's
+    // `after` (shown in the trail), NOT in request.note: that column is the
+    // requester's own note, and writing the approver's over it destroyed the
+    // requester's text (or blanked it when the approver left theirs empty).
+    { dueDate: params.cycle === "dated" ? params.dueDate : null },
     async () => ({
       objectType: "request",
       objectId: requestId,
