@@ -1,18 +1,19 @@
 "use client";
 
 import { useState } from "react";
+import { buttonClass } from "@/ui/styles";
 import { forceSignOutAction } from "../../actions";
 
 // Distinct from revoking a specific grant, which already takes effect
 // immediately on its own (src/admin/roleGrantCore.ts's own comment on
 // forceSignOut). This kills every active login session right now —
 // the harder lever, for e.g. suspected compromise.
-export function ForceSignOutButton({ userId }: { userId: string }) {
+export function ForceSignOutButton({ userId, name }: { userId: string; name: string }) {
   const [pending, setPending] = useState(false);
   const [done, setDone] = useState(false);
 
   async function signOut() {
-    if (!confirm("Sign this user out of every active session right now?")) return;
+    if (!confirm(`Sign ${name} out on every device right now? They'll have to sign in again.`)) return;
     setPending(true);
     await forceSignOutAction(userId);
     setPending(false);
@@ -21,14 +22,13 @@ export function ForceSignOutButton({ userId }: { userId: string }) {
 
   return (
     <span className="flex items-center gap-2">
-      {done && <span className="text-xs text-zinc-600 dark:text-zinc-400">Signed out.</span>}
-      <button
-        type="button"
-        disabled={pending}
-        onClick={() => void signOut()}
-        className="rounded border border-red-300 px-3 py-1 text-xs font-medium text-red-700 disabled:opacity-50 dark:border-red-900 dark:text-red-400"
-      >
-        Force sign-out
+      {done && (
+        <span role="status" className="text-xs text-ink-2">
+          Signed out everywhere.
+        </span>
+      )}
+      <button type="button" disabled={pending} onClick={() => void signOut()} className={buttonClass("danger", "sm")}>
+        {pending ? "Signing out…" : "Sign out everywhere"}
       </button>
     </span>
   );
