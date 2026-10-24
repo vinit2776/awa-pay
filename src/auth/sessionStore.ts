@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { and, eq, isNull, sql } from "drizzle-orm";
-import { withActorScope, withGrantScope, withPresentedSessionToken } from "@/db/runtime";
+import { type ScopedTx, withActorScope, withGrantScope, withPresentedSessionToken } from "@/db/runtime";
 import { session } from "@/db/schema";
 
 // Pure DB operations for the session table — zero next/headers imports,
@@ -33,7 +33,11 @@ export type StoredSession = {
   createdAt: Date;
 };
 
-export async function insertSession(
+// For a caller already inside withActorScope(userId, ...) — login folds the
+// session insert into the same transaction as its other own-row writes
+// instead of opening a second one.
+export async function insertSessionInTx(
+  tx: ScopedTx,
   userId: string,
   status: "pending_mfa" | "active",
   meta: SessionMeta,
@@ -42,19 +46,25 @@ export async function insertSession(
   const now = Date.now();
   const expiresAt = new Date(now + (status === "pending_mfa" ? PENDING_MFA_TTL_MS : ACTIVE_SESSION_TTL_MS));
 
-  await withActorScope(userId, (tx) =>
-    tx.insert(session).values({
-      userId,
-      tokenHash: hashToken(rawToken),
-      status,
-      expiresAt,
-      lastSeenAt: status === "active" ? new Date(now) : undefined,
-      ip: meta.ip,
-      userAgent: meta.userAgent,
-    }),
-  );
+  await tx.insert(session).values({
+    userId,
+    tokenHash: hashToken(rawToken),
+    status,
+    expiresAt,
+    lastSeenAt: status === "active" ? new Date(now) : undefined,
+    ip: meta.ip,
+    userAgent: meta.userAgent,
+  });
 
   return { rawToken, expiresAt };
+}
+
+export async function insertSession(
+  userId: string,
+  status: "pending_mfa" | "active",
+  meta: SessionMeta,
+): Promise<{ rawToken: string; expiresAt: Date }> {
+  return withActorScope(userId, (tx) => insertSessionInTx(tx, userId, status, meta));
 }
 
 /** Looks a session up by its raw (unhashed) token. Optionally filters by status. */

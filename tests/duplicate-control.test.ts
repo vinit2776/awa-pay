@@ -1,22 +1,17 @@
 import { randomUUID } from "node:crypto";
-import { eq, inArray } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { closeOwnerConnection, dbOwner } from "../scripts/db-owner";
+import { cleanupFixturesForNonce } from "../scripts/fixtures";
 import { withGrantScope } from "../src/db/runtime";
 import {
-  accounting,
   company,
   department,
   duplicateCheck,
-  event,
   headOfAccount,
-  payment,
   request,
-  requestFile,
   roleGrant,
   user,
-  vendor,
-  vendorBank,
 } from "../src/db/schema";
 import { hashSecret } from "../src/auth/password";
 import { submitRequest } from "../src/requests/captureCore";
@@ -171,28 +166,11 @@ beforeAll(async () => {
 }, 60_000);
 
 afterAll(async () => {
-  const userIds = [requesterA.id, approverA.id, requesterB.id, approverB.id, accountantUser.id, payerUser.id, superAdminRequester.id];
-
-  const reqs = await dbOwner.select({ id: request.id }).from(request).where(inArray(request.departmentId, [deptA.id, deptB.id]));
-  const reqIds = reqs.map((r) => r.id);
-  if (reqIds.length > 0) {
-    await dbOwner.delete(duplicateCheck).where(inArray(duplicateCheck.requestId, reqIds));
-    await dbOwner.delete(payment).where(inArray(payment.requestId, reqIds));
-    await dbOwner.delete(accounting).where(inArray(accounting.requestId, reqIds));
-    await dbOwner.delete(event).where(inArray(event.requestId, reqIds));
-    await dbOwner.delete(requestFile).where(inArray(requestFile.requestId, reqIds));
-    await dbOwner.delete(request).where(inArray(request.id, reqIds));
+  try {
+    await cleanupFixturesForNonce(dbOwner, nonce);
+  } finally {
+    await closeOwnerConnection();
   }
-  await dbOwner.delete(roleGrant).where(inArray(roleGrant.userId, userIds));
-  if (createdVendorIds.length > 0) {
-    await dbOwner.delete(vendorBank).where(inArray(vendorBank.vendorId, createdVendorIds));
-    await dbOwner.delete(vendor).where(inArray(vendor.id, createdVendorIds));
-  }
-  await dbOwner.delete(headOfAccount).where(eq(headOfAccount.id, head.id));
-  await dbOwner.delete(department).where(inArray(department.id, [deptA.id, deptB.id]));
-  await dbOwner.delete(company).where(eq(company.id, companyX.id));
-  await dbOwner.delete(user).where(inArray(user.id, userIds));
-  await closeOwnerConnection();
 }, 60_000);
 
 describe("duplicate control (the phase-11 gate)", () => {

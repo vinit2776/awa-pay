@@ -78,6 +78,26 @@ export function renderEventSummary(event: RenderableEvent): EventSummary {
       const amount = amountMinor !== null ? formatMinorUnits(amountMinor) : "";
       return { icon: "₹", label: "Paid", detail: `${str("mode").toUpperCase()} · ${amount} · UTR ${str("reference")}` };
     }
+    case "request.advance_paid":
+    case "request.part_paid": {
+      const amountMinor = num("amountMinor");
+      const balanceMinor = num("balanceMinor");
+      const amount = amountMinor !== null ? formatMinorUnits(amountMinor) : "";
+      const balance = balanceMinor !== null ? ` · balance ${formatMinorUnits(balanceMinor)}` : "";
+      return {
+        icon: "₹",
+        label: event.type === "request.advance_paid" ? "Advance paid" : "Part paid",
+        detail: `${str("mode").toUpperCase()} · ${amount} · UTR ${str("reference")}${balance}`,
+      };
+    }
+    case "request.invoice_attached": {
+      const amountMinor = num("amountMinor");
+      return {
+        icon: "✓",
+        label: "Invoice attached",
+        detail: `${str("invoiceNo")} · ${amountMinor !== null ? formatMinorUnits(amountMinor) : ""}`,
+      };
+    }
     case "request.returned_to_accounts":
       return { icon: "!", label: "Returned to accounts", detail: str("reason") };
     case "request.resubmitted":

@@ -31,6 +31,11 @@ describe("stages", () => {
     expect(stageTrack("rejected")[2].state).toBe("todo");
     expect(stageTrack("withdrawn")[0]).toMatchObject({ label: "Withdrawn", state: "stopped" });
   });
+
+  it("pauses at To pay while an advance waits for its invoice", () => {
+    expect(stageTrack("awaiting_invoice").map((s) => s.state)).toEqual(["done", "done", "done", "paused", "todo"]);
+    expect(stageTrack("awaiting_invoice")[3].label).toBe("Invoice awaited");
+  });
 });
 
 describe("flag labels", () => {

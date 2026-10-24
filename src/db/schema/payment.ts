@@ -4,11 +4,13 @@ import { paymentModeEnum } from "./enums";
 import { request } from "./request";
 import { user } from "./user";
 
-// UNIQUE(request_id): phase 4 supports exactly one full payment per
-// request, moving straight to stage='paid'. AGENTS.md's "accepts more than
-// one until its balance is zero" describes the settlement-ledger vision
-// (concept-v2.html §09) — a distinct, bigger feature, deferred. This index
-// makes that scope cut structural, not just a UI convention.
+// A request takes more than one payment: an advance and then a balance, or
+// a bill settled in parts (concept-v2.html section 09, "a request accepts
+// more than one until its balance is zero"). There is deliberately no
+// per-request uniqueness here any more. The ceiling that replaced "exactly
+// one" is enforced in payRequest (src/requests/transitions.ts), inside the
+// same transaction and under the same request-row lock as the INSERT:
+// settled money can never exceed request.amount_minor.
 //
 // UNIQUE(upper(reference)) is AGENTS.md rule 7, verbatim: "a unique index
 // on the payment reference." This table didn't exist until now; this is
@@ -46,7 +48,6 @@ export const payment = pgTable(
     paidAt: timestamp("paid_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
-    uniqueIndex("payment_request_id_unique_idx").on(table.requestId),
     uniqueIndex("payment_reference_unique_idx").on(sql`upper(${table.reference})`),
     check("payment_amount_minor_positive_check", sql`${table.amountMinor} > 0`),
     check("payment_tds_minor_nonneg_check", sql`${table.tdsMinor} >= 0`),

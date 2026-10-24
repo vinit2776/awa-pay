@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { eq, inArray } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { closeOwnerConnection, dbOwner } from "../scripts/db-owner";
+import { cleanupFixturesForNonce } from "../scripts/fixtures";
 import { UnauthorizedGrantError, withGrantScope } from "../src/db/runtime";
-import { accounting, company, department, event, headOfAccount, payment, request, requestFile, roleGrant, user, vendor, vendorBank } from "../src/db/schema";
+import { company, department, event, headOfAccount, request, roleGrant, user, vendor, vendorBank } from "../src/db/schema";
 import { computeEventHash } from "../src/events/hash";
 import { hashSecret } from "../src/auth/password";
 import { submitRequest, type Attachment } from "../src/requests/captureCore";
@@ -164,34 +165,11 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  const userIds = [
-    requesterUser.id,
-    approverUser.id,
-    approverUserB.id,
-    accountantUser.id,
-    accountantUserY.id,
-    payerUser.id,
-    payerUserY.id,
-    dualRoleUser.id,
-  ];
-
-  const reqs = await dbOwner.select({ id: request.id }).from(request).where(inArray(request.departmentId, [deptA.id, deptB.id]));
-  const reqIds = reqs.map((r) => r.id);
-  if (reqIds.length > 0) {
-    await dbOwner.delete(payment).where(inArray(payment.requestId, reqIds));
-    await dbOwner.delete(accounting).where(inArray(accounting.requestId, reqIds));
-    await dbOwner.delete(event).where(inArray(event.requestId, reqIds));
-    await dbOwner.delete(requestFile).where(inArray(requestFile.requestId, reqIds));
-    await dbOwner.delete(request).where(inArray(request.id, reqIds));
+  try {
+    await cleanupFixturesForNonce(dbOwner, nonce);
+  } finally {
+    await closeOwnerConnection();
   }
-  await dbOwner.delete(roleGrant).where(inArray(roleGrant.userId, userIds));
-  await dbOwner.delete(vendorBank).where(eq(vendorBank.vendorId, testVendor.id));
-  await dbOwner.delete(vendor).where(eq(vendor.id, testVendor.id));
-  await dbOwner.delete(headOfAccount).where(eq(headOfAccount.id, head.id));
-  await dbOwner.delete(department).where(inArray(department.id, [deptA.id, deptB.id]));
-  await dbOwner.delete(company).where(inArray(company.id, [companyX.id, companyY.id]));
-  await dbOwner.delete(user).where(inArray(user.id, userIds));
-  await closeOwnerConnection();
 });
 
 async function raiseTestRequest(): Promise<string> {

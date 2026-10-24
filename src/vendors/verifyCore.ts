@@ -1,5 +1,5 @@
 import { and, desc, eq, isNull } from "drizzle-orm";
-import { withGrantScope } from "@/db/runtime";
+import { type ScopedTx, withGrantScope } from "@/db/runtime";
 import { accounting, vendor, vendorBank, vendorDocument } from "@/db/schema";
 import { appendEvent, type Meta } from "@/events/append";
 import { encryptSecret } from "./crypto";
@@ -29,37 +29,42 @@ export type PaymentBankReadiness =
 // row's verified_at starts null, so the very next payRequest attempt on
 // ANY open request for that vendor re-triggers this gate automatically.
 export async function checkPaymentBankReadiness(actorId: string, requestId: string): Promise<PaymentBankReadiness> {
-  return withGrantScope(actorId, "payer", async (tx) => {
-    const [acc] = await tx
-      .select({ vendorId: accounting.vendorId })
-      .from(accounting)
-      .where(eq(accounting.requestId, requestId))
-      .orderBy(desc(accounting.accountedAt))
-      .limit(1);
-    if (!acc) return { ready: false, reason: "no_vendor" };
+  return withGrantScope(actorId, "payer", (tx) => readBankReadiness(tx, requestId));
+}
 
-    const [v] = await tx.select({ id: vendor.id, name: vendor.name }).from(vendor).where(eq(vendor.id, acc.vendorId)).limit(1);
-    if (!v) return { ready: false, reason: "no_vendor" };
+// The same live read, for a caller already inside a payer-scoped
+// transaction (the request detail page, payRequest). One statement rather
+// than three dependent ones — latest accounting row, its vendor, that
+// vendor's current bank — because each dependent query costs two round
+// trips and the chain can't be pipelined. LEFT JOINs keep the old
+// semantics exactly: the latest accounting row decides which vendor is
+// meant, and a vendor or bank row RLS hides reads as "no vendor"/"no bank"
+// rather than silently falling through to an older accounting row.
+export async function readBankReadiness(tx: ScopedTx, requestId: string): Promise<PaymentBankReadiness> {
+  const [row] = await tx
+    .select({ vendorId: vendor.id, vendorName: vendor.name, bank: vendorBank })
+    .from(accounting)
+    .leftJoin(vendor, eq(vendor.id, accounting.vendorId))
+    .leftJoin(vendorBank, and(eq(vendorBank.vendorId, vendor.id), isNull(vendorBank.supersededAt)))
+    .where(eq(accounting.requestId, requestId))
+    .orderBy(desc(accounting.accountedAt))
+    .limit(1);
+  if (!row || !row.vendorId || !row.vendorName) return { ready: false, reason: "no_vendor" };
 
-    const [bank] = await tx
-      .select()
-      .from(vendorBank)
-      .where(and(eq(vendorBank.vendorId, v.id), isNull(vendorBank.supersededAt)))
-      .limit(1);
-    if (!bank) return { ready: false, reason: "no_bank", vendorId: v.id, vendorName: v.name };
+  const { vendorId, vendorName, bank } = row;
+  if (!bank) return { ready: false, reason: "no_bank", vendorId, vendorName };
 
-    if (!bank.verifiedAt) {
-      return {
-        ready: false,
-        reason: "unverified",
-        vendorId: v.id,
-        vendorName: v.name,
-        bank: { id: bank.id, beneficiaryName: bank.beneficiaryName, accountNumberLast4: bank.accountNumberLast4, ifsc: bank.ifsc, branch: bank.branch },
-      };
-    }
+  if (!bank.verifiedAt) {
+    return {
+      ready: false,
+      reason: "unverified",
+      vendorId,
+      vendorName,
+      bank: { id: bank.id, beneficiaryName: bank.beneficiaryName, accountNumberLast4: bank.accountNumberLast4, ifsc: bank.ifsc, branch: bank.branch },
+    };
+  }
 
-    return { ready: true };
-  });
+  return { ready: true };
 }
 
 export type VerifyVendorBankResult = { ok: true } | { ok: false; error: string };

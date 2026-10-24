@@ -1,10 +1,8 @@
 import "server-only";
-import { eq } from "drizzle-orm";
 import { redirect } from "next/navigation";
 import { cache } from "react";
-import { withActorScope } from "@/db/runtime";
-import { user } from "@/db/schema";
 import { verifyActiveSession, type CurrentSession } from "./session";
+import { loadViewer } from "./viewer";
 
 // The real, DB-backed check — called from Server Components/Actions/Route
 // Handlers, never from src/proxy.ts (which only does the cheap, optimistic
@@ -18,22 +16,12 @@ export const verifySession = cache(async (): Promise<CurrentSession> => {
   return current;
 });
 
-export const getCurrentUser = cache(async () => {
+// The signed-in person plus the roles they hold — one transaction, memoized
+// per request. Prefer this over reading the user and their grants
+// separately.
+export const getViewer = cache(async () => {
   const session = await verifySession();
-
-  const [row] = await withActorScope(session.userId, (tx) =>
-    tx
-      .select({
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        status: user.status,
-        mfaEnrolled: user.mfaEnrolled,
-      })
-      .from(user)
-      .where(eq(user.id, session.userId))
-      .limit(1),
-  );
-
-  return row ?? null;
+  return loadViewer(session.userId);
 });
+
+export const getCurrentUser = cache(async () => (await getViewer())?.user ?? null);

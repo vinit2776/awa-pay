@@ -12,6 +12,7 @@ import {
   notifyAccount,
   notifyApprove,
   notifyHold,
+  notifyInvoiceAttached,
   notifyMentions,
   notifyNudge,
   notifyPay,
@@ -25,6 +26,7 @@ import {
 import {
   accountRequest,
   approveRequest,
+  attachInvoice,
   holdRequest,
   payRequest,
   rejectRequest,
@@ -34,6 +36,7 @@ import {
   returnToApprover,
   withdrawRequest,
   type AdviceAttachment,
+  type AttachInvoiceParams,
   type FromAccount,
   type HoldSubReason,
   type PaymentCycle,
@@ -75,6 +78,11 @@ async function afterTransition(requestId: string, result: TransitionResult, noti
 }
 
 export async function requestAdviceUploadSlot(mime: string): Promise<UploadSlotResult> {
+  await verifySession();
+  return mintUploadSlot("bills", mime);
+}
+
+export async function requestInvoiceUploadSlot(mime: string): Promise<UploadSlotResult> {
   await verifySession();
   return mintUploadSlot("bills", mime);
 }
@@ -223,6 +231,14 @@ export async function returnToAccountsAction(requestId: string, input: { reason:
   const meta = await getClientMeta();
   return afterTransition(requestId, await returnToAccounts(session.userId, requestId, input, meta), () =>
     notifyReturnToAccounts(session.userId, requestId, input.reason),
+  );
+}
+
+export async function attachInvoiceAction(requestId: string, input: AttachInvoiceParams): Promise<TransitionResult> {
+  const session = await verifySession();
+  const meta = await getClientMeta();
+  return afterTransition(requestId, await attachInvoice(session.userId, requestId, input, meta), () =>
+    notifyInvoiceAttached(session.userId, requestId),
   );
 }
 

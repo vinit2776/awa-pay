@@ -1,18 +1,14 @@
-import { and, asc, desc, eq, isNull } from "drizzle-orm";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { withGrantScope } from "@/db/runtime";
-import { accounting, comment, company, department, event, headOfAccount, payment, query, requestFile, user } from "@/db/schema";
 import { renderEventSummary } from "@/events/render";
-import { computeFlags, loadFlagContext } from "@/flags/computeFlags";
+import { computeFlags } from "@/flags/computeFlags";
 import { FlagChips } from "@/ui/FlagChips";
 import { formatMinorUnits } from "@/lib/money";
-import { resolveViewerRole } from "@/requests/viewerRole";
+import { loadRequestView } from "@/requests/requestView";
 import { presignGetUrl } from "@/storage/r2";
 import { verifySession } from "@/auth/dal";
-import { checkPaymentBankReadiness } from "@/vendors/verifyCore";
-import { actorHoldsRole } from "@/duplicates/duplicateCore";
 import { ApproverPanel } from "./ApproverPanel";
+import { AttachInvoicePanel } from "./AttachInvoicePanel";
 import { AccountantPanel } from "./AccountantPanel";
 import { ConversationPanel, type ConversationEntry } from "./ConversationPanel";
 import { PayerPanel } from "./PayerPanel";
@@ -23,61 +19,31 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
   const { id } = await params;
   const session = await verifySession();
 
-  const resolved = await resolveViewerRole(session.userId, id);
-  if (!resolved) {
+  // One transaction for everything this page reads (role resolution
+  // included) — see src/requests/requestView.ts.
+  const view = await loadRequestView(session.userId, id);
+  if (!view) {
     notFound();
   }
-  const { role, request: req } = resolved;
-
-  const [department_, files, commentAttachments, accountingRows, paymentRow, events, comments, openQueryRows, routedApproverName, flagContext] = await withGrantScope(
-    session.userId,
+  const {
     role,
-    async (tx) => {
-      const [dept] = await tx.select().from(department).where(eq(department.id, req.departmentId)).limit(1);
-      const bills = await tx
-        .select()
-        .from(requestFile)
-        .where(and(eq(requestFile.requestId, req.id), eq(requestFile.kind, "bill")))
-        .orderBy(asc(requestFile.pageNo));
-      const attachments = await tx
-        .select()
-        .from(requestFile)
-        .where(and(eq(requestFile.requestId, req.id), eq(requestFile.kind, "comment_attachment")))
-        .orderBy(asc(requestFile.createdAt));
-      const accountingHistory = await tx
-        .select()
-        .from(accounting)
-        .where(eq(accounting.requestId, req.id))
-        .orderBy(desc(accounting.accountedAt));
-      const [pay] = await tx.select().from(payment).where(eq(payment.requestId, req.id)).limit(1);
-      const eventRows = await tx
-        .select({ event, actorName: user.name })
-        .from(event)
-        .leftJoin(user, eq(user.id, event.actor))
-        .where(eq(event.requestId, req.id))
-        .orderBy(asc(event.at));
-      const commentRows = await tx
-        .select({ comment, authorName: user.name })
-        .from(comment)
-        .leftJoin(user, eq(user.id, comment.author))
-        .where(eq(comment.requestId, req.id))
-        .orderBy(asc(comment.at));
-      const openQueries = await tx
-        .select({ query, raisedByName: user.name })
-        .from(query)
-        .leftJoin(user, eq(user.id, query.raisedBy))
-        .where(and(eq(query.requestId, req.id), isNull(query.resolvedAt)))
-        .orderBy(asc(query.at));
-      // The reconsideration routing hint (phase 11) — a soft nudge, not
-      // enforcement: any approver in the department pool can still act on
-      // this request regardless of whether they're the one named here.
-      const routedName = req.routedApproverId
-        ? (await tx.select({ name: user.name }).from(user).where(eq(user.id, req.routedApproverId)).limit(1))[0]?.name ?? null
-        : null;
-      const flagCtx = await loadFlagContext(tx, [req]);
-      return [dept, bills, attachments, accountingHistory, pay ?? null, eventRows, commentRows, openQueries, routedName, flagCtx];
-    },
-  );
+    req,
+    department: department_,
+    bills: files,
+    commentAttachments,
+    accountingRows,
+    payments,
+    events,
+    comments,
+    openQueryRows,
+    routedApproverName,
+    flagContext,
+    companies,
+    heads,
+    canOverrideDuplicate,
+    companyForPayer,
+    bankReadiness,
+  } = view;
 
   const filesWithUrls = await Promise.all(
     files.map(async (f) => ({ ...f, downloadUrl: await presignGetUrl(f.storageKey) })),
@@ -108,30 +74,21 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
 
   const latestAccounting = accountingRows[0] ?? null;
 
-  // The accountant panel needs company/head pickers — only fetched when
-  // this viewer could actually need them, since company_select is
-  // company-scoped and would otherwise just return an empty list to roles
-  // that don't hold company scope at all.
-  const [companies, heads] =
-    role === "accountant"
-      ? await withGrantScope(session.userId, "accountant", async (tx) => [
-          await tx.select().from(company).where(eq(company.active, true)),
-          await tx.select().from(headOfAccount).where(eq(headOfAccount.active, true)),
-        ])
-      : [[], []];
-
-  const canOverrideDuplicate = role === "accountant" ? await actorHoldsRole(session.userId, "super_admin") : false;
-
-  const companyForPayer =
-    role === "payer" && req.companyId
-      ? (await withGrantScope(session.userId, "payer", (tx) => tx.select().from(company).where(eq(company.id, req.companyId!)).limit(1)))[0]
-      : null;
-
-  // The payer-verification gate (phase 10) — computed here, server-side,
-  // same as companies/heads above, rather than fetched client-side: it's
-  // a live read (see checkPaymentBankReadiness's own comment on why),
-  // fetched once per page load alongside everything else this role needs.
-  const bankReadiness = role === "payer" && req.stage === "to_pay" ? await checkPaymentBankReadiness(session.userId, req.id) : null;
+  // The settlement ledger in miniature (concept-v2.html section 09): what
+  // is owed, what has moved, what is still due. Balance is derived, never
+  // typed — payRequest enforces the same ceiling under the row lock.
+  const settledMinor = payments.reduce((sum, p) => sum + p.amountMinor, 0);
+  const balanceMinor = req.amountMinor - settledMinor;
+  const isAdvance = req.kind === "advance";
+  const invoiceIsIn = !isAdvance || req.invoiceAttachedAt !== null;
+  // What the payer should be prompted to pay next: an advance is capped at
+  // what was asked for until its invoice is in; a part-payment request's
+  // first payment is the part that was asked for; otherwise the balance.
+  const suggestedPayMinor = !invoiceIsIn
+    ? Math.max((req.payNowMinor ?? 0) - settledMinor, 0)
+    : req.payNowMinor !== null && settledMinor < req.payNowMinor
+      ? req.payNowMinor - settledMinor
+      : balanceMinor;
 
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-6 px-4 py-8">
@@ -144,9 +101,27 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
           {req.vendor ?? "Unknown vendor"} · {department_?.name} · {formatMinorUnits(req.amountMinor, req.currency)}
         </p>
         <p className="text-sm text-zinc-500 dark:text-zinc-500">
-          stage: {req.stage}
+          stage: {req.stage.replace(/_/g, " ")}
           {req.revision > 1 && ` · revision ${req.revision}`}
         </p>
+        {(isAdvance || req.payNowMinor !== null) && (
+          <p className="mt-2 rounded bg-violet-50 px-3 py-2 text-sm text-violet-900 dark:bg-violet-950 dark:text-violet-200">
+            {isAdvance ? (
+              <>
+                <strong>Advance</strong> — money goes out before the tax invoice.{" "}
+                {req.payNowMinor !== null && <>Asking for {formatMinorUnits(req.payNowMinor, req.currency)} now of a {formatMinorUnits(req.amountMinor, req.currency)} job.</>}
+                {req.quotationNo && <> Quotation {req.quotationNo}.</>}
+                {!invoiceIsIn && req.invoiceExpectedBy && <> Tax invoice expected by {req.invoiceExpectedBy}.</>}
+                {invoiceIsIn && <> Tax invoice attached.</>}
+              </>
+            ) : (
+              <>
+                <strong>Part payment</strong> — asking for {formatMinorUnits(req.payNowMinor!, req.currency)} now of a {formatMinorUnits(req.amountMinor, req.currency)} bill.
+              </>
+            )}
+            {req.payNowReason && <> Why: {req.payNowReason}.</>}
+          </p>
+        )}
       </div>
 
       {role === "approver" && routedApproverName && req.stage === "awaiting_approval" && (
@@ -157,7 +132,7 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
 
       {req.note && <p className="text-sm">{req.note}</p>}
 
-      {(latestAccounting || paymentRow) && (
+      {(latestAccounting || payments.length > 0) && (
         <div className="flex flex-col gap-1 text-sm text-zinc-600 dark:text-zinc-400">
           {latestAccounting && (
             <p>
@@ -167,9 +142,15 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
               </Link>
             </p>
           )}
-          {paymentRow && (
-            <p>
-              Paid {paymentRow.mode.toUpperCase()} · {paymentRow.valueDate} · UTR {paymentRow.reference}
+          {payments.map((p) => (
+            <p key={p.id}>
+              Paid {formatMinorUnits(p.amountMinor, req.currency)} {p.mode.toUpperCase()} · {p.valueDate} · UTR {p.reference}
+            </p>
+          ))}
+          {payments.length > 0 && (
+            <p className="font-medium text-zinc-800 dark:text-zinc-200">
+              Paid so far {formatMinorUnits(settledMinor, req.currency)} of {formatMinorUnits(req.amountMinor, req.currency)}
+              {isAdvance && !invoiceIsIn ? " quoted" : ""} · balance {formatMinorUnits(balanceMinor, req.currency)}
             </p>
           )}
         </div>
@@ -211,6 +192,17 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
         </Link>
       )}
 
+      {role === "requester" && req.stage === "awaiting_invoice" && req.raisedBy === session.userId && (
+        <AttachInvoicePanel
+          requestId={req.id}
+          vendor={req.vendor}
+          currency={req.currency}
+          quotedMinor={req.amountMinor}
+          paidMinor={settledMinor}
+          expectedBy={req.invoiceExpectedBy}
+        />
+      )}
+
       {role === "approver" && (req.stage === "awaiting_approval" || req.stage === "on_hold") && (
         <ApproverPanel requestId={req.id} stage={req.stage} />
       )}
@@ -218,7 +210,15 @@ export default async function RequestDetailPage({ params }: PageProps<"/requests
         <AccountantPanel requestId={req.id} companies={companies} heads={heads} vendorNameHint={req.vendor} canOverrideDuplicate={canOverrideDuplicate} />
       )}
       {role === "payer" && req.stage === "to_pay" && bankReadiness && (
-        <PayerPanel requestId={req.id} bankAccountsJson={companyForPayer?.bankAccounts ?? []} readiness={bankReadiness} />
+        <PayerPanel
+          requestId={req.id}
+          bankAccountsJson={companyForPayer?.bankAccounts ?? []}
+          readiness={bankReadiness}
+          suggestedAmountMinor={suggestedPayMinor}
+          balanceMinor={balanceMinor}
+          currency={req.currency}
+          invoiceIsIn={invoiceIsIn}
+        />
       )}
 
       <div className="flex flex-col gap-1">

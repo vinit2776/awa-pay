@@ -47,6 +47,12 @@ export async function resubmit(params: ResubmitParams): Promise<ResubmitResult> 
     return { ok: false, error: "This request isn't waiting on a resubmission." };
   }
 
+  // request_pay_now_within_total_check would otherwise turn this into a bare
+  // database error: what was asked for now can't exceed the new total.
+  if (req.payNowMinor !== null && params.amountMinor < req.payNowMinor) {
+    return { ok: false, error: "The total can't be less than the amount already asked for now. Raise a new request instead." };
+  }
+
   return resubmitRequest(
     params.userId,
     params.requestId,

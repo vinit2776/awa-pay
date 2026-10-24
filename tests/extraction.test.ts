@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { eq, inArray } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import sharp from "sharp";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { closeOwnerConnection, dbOwner } from "../scripts/db-owner";
+import { cleanupFixturesForNonce } from "../scripts/fixtures";
 import { hashSecret } from "../src/auth/password";
 import { withGrantScope } from "../src/db/runtime";
-import { department, event, extraction, extractionAttempt, request, requestFile, roleGrant, user } from "../src/db/schema";
+import { department, event, extraction, extractionAttempt, requestFile, roleGrant, user } from "../src/db/schema";
 import { computeDHash } from "../src/extraction/dhash";
 import { needsEscalation, runExtraction } from "../src/extraction/extractCore";
 import { parseExtractedFields } from "../src/extraction/schema";
@@ -132,27 +133,11 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  const userIds = [requesterUser.id, approverUser.id];
-  const reqs = await dbOwner.select({ id: request.id }).from(request).where(eq(request.departmentId, deptA.id));
-  const reqIds = reqs.map((r) => r.id);
-
-  // extraction_attempt.request_id FKs to request — must go first.
-  const attempts = await dbOwner.select({ id: extractionAttempt.id }).from(extractionAttempt).where(inArray(extractionAttempt.attemptedBy, userIds));
-  const attemptIds = attempts.map((a) => a.id);
-  if (attemptIds.length > 0) {
-    await dbOwner.delete(extraction).where(inArray(extraction.attemptId, attemptIds));
-    await dbOwner.delete(extractionAttempt).where(inArray(extractionAttempt.id, attemptIds));
+  try {
+    await cleanupFixturesForNonce(dbOwner, nonce);
+  } finally {
+    await closeOwnerConnection();
   }
-
-  if (reqIds.length > 0) {
-    await dbOwner.delete(event).where(inArray(event.requestId, reqIds));
-    await dbOwner.delete(requestFile).where(inArray(requestFile.requestId, reqIds));
-    await dbOwner.delete(request).where(inArray(request.id, reqIds));
-  }
-  await dbOwner.delete(roleGrant).where(inArray(roleGrant.userId, userIds));
-  await dbOwner.delete(department).where(eq(department.id, deptA.id));
-  await dbOwner.delete(user).where(inArray(user.id, userIds));
-  await closeOwnerConnection();
 }, 60_000);
 
 describe("extraction against the real dev DB and R2 (the phase-13 gate)", () => {

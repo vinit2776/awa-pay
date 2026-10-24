@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { eq, inArray } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { closeOwnerConnection, dbOwner } from "../scripts/db-owner";
+import { cleanupFixturesForNonce } from "../scripts/fixtures";
 import { withGrantScope } from "../src/db/runtime";
-import { comment, company, department, event, request, requestFile, roleGrant, user } from "../src/db/schema";
+import { comment, company, department, requestFile, roleGrant, user } from "../src/db/schema";
 import { hashSecret } from "../src/auth/password";
 import { resolveMentions } from "../src/conversation/mentions";
 import { postComment } from "../src/conversation/commentsCore";
@@ -100,25 +101,11 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  const userIds = [requesterUser.id, approverUser.id, anilKumar.id, anilKumarSingh.id, payerUser.id, payerUserY.id];
-  const reqs = await dbOwner.select({ id: request.id }).from(request).where(inArray(request.departmentId, [deptA.id, deptB.id]));
-  const reqIds = reqs.map((r) => r.id);
-  if (reqIds.length > 0) {
-    const comments = await dbOwner.select({ id: comment.id }).from(comment).where(inArray(comment.requestId, reqIds));
-    const commentIds = comments.map((c) => c.id);
-    if (commentIds.length > 0) {
-      await dbOwner.delete(requestFile).where(inArray(requestFile.commentId, commentIds));
-    }
-    await dbOwner.delete(comment).where(inArray(comment.requestId, reqIds));
-    await dbOwner.delete(requestFile).where(inArray(requestFile.requestId, reqIds));
-    await dbOwner.delete(event).where(inArray(event.requestId, reqIds));
-    await dbOwner.delete(request).where(inArray(request.id, reqIds));
+  try {
+    await cleanupFixturesForNonce(dbOwner, nonce);
+  } finally {
+    await closeOwnerConnection();
   }
-  await dbOwner.delete(roleGrant).where(inArray(roleGrant.userId, userIds));
-  await dbOwner.delete(department).where(inArray(department.id, [deptA.id, deptB.id]));
-  await dbOwner.delete(company).where(inArray(company.id, [companyX.id, companyY.id]));
-  await dbOwner.delete(user).where(inArray(user.id, userIds));
-  await closeOwnerConnection();
 });
 
 describe("mentions (pure)", () => {

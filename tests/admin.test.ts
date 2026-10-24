@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { eq, inArray } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { hashSecret } from "../src/auth/password";
 import { insertSession } from "../src/auth/sessionStore";
 import { forceSignOut, getUserWithGrants, grantRole, listUsers, revokeGrant } from "../src/admin/roleGrantCore";
 import { closeOwnerConnection, dbOwner } from "../scripts/db-owner";
+import { cleanupFixturesForNonce } from "../scripts/fixtures";
 import { UnauthorizedGrantError, withGrantScope } from "../src/db/runtime";
 import { department, roleGrant, session, user } from "../src/db/schema";
 
@@ -50,12 +51,11 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  const userIds = [superAdmin.id, plainUser.id, targetUser.id];
-  await dbOwner.delete(session).where(inArray(session.userId, userIds));
-  await dbOwner.delete(roleGrant).where(inArray(roleGrant.userId, userIds));
-  await dbOwner.delete(user).where(inArray(user.id, userIds));
-  await dbOwner.delete(department).where(eq(department.id, deptA.id));
-  await closeOwnerConnection();
+  try {
+    await cleanupFixturesForNonce(dbOwner, nonce);
+  } finally {
+    await closeOwnerConnection();
+  }
 });
 
 describe("role_grant_requester_not_global_check (DB constraint)", () => {

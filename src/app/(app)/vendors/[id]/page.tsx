@@ -8,7 +8,7 @@ import { formatMinorUnits } from "@/lib/money";
 import { presignGetUrl } from "@/storage/r2";
 import { tdsRateLabel } from "@/vendors/tds";
 import { getVendor, listVendorPaymentHistory } from "@/vendors/vendorsCore";
-import { resolveVendorViewerRoles, resolveVendorWriterRole } from "@/vendors/viewerRole";
+import { resolveVendorViewerRoles } from "@/vendors/viewerRole";
 import { VendorBankForm } from "./VendorBankForm";
 import { VendorDocumentUpload } from "./VendorDocumentUpload";
 import { VendorProfileForm } from "./VendorProfileForm";
@@ -30,7 +30,9 @@ export default async function VendorPage({ params }: PageProps<"/vendors/[id]">)
     notFound();
   }
   const role = roles[0];
-  const editRole = await resolveVendorWriterRole(session.userId);
+  // Derived from the roles just read — resolveVendorWriterRole would run the
+  // same role_grant query (a whole transaction) a second time.
+  const editRole = roles.includes("accountant") ? "accountant" : roles.includes("super_admin") ? "super_admin" : null;
   const canEdit = editRole !== null;
 
   const found = await getVendor(session.userId, role, id);
@@ -39,11 +41,15 @@ export default async function VendorPage({ params }: PageProps<"/vendors/[id]">)
   }
   const { vendor, currentBank, documents } = found;
 
-  const [defaultHead] = vendor.defaultHeadId
-    ? await withGrantScope(session.userId, role, (tx) => tx.select().from(headOfAccount).where(eq(headOfAccount.id, vendor.defaultHeadId!)).limit(1))
-    : [null];
-
-  const payments = await listVendorPaymentHistory(session.userId, role, id);
+  // Three independent scoped reads — separate connections, so they overlap
+  // instead of queuing (each is its own transaction).
+  const [[defaultHead], payments, editableHeads] = await Promise.all([
+    vendor.defaultHeadId
+      ? withGrantScope(session.userId, role, (tx) => tx.select().from(headOfAccount).where(eq(headOfAccount.id, vendor.defaultHeadId!)).limit(1))
+      : Promise.resolve([null]),
+    listVendorPaymentHistory(session.userId, role, id),
+    canEdit && editRole ? fetchHeads(session.userId, editRole) : Promise.resolve([]),
+  ]);
 
   const documentsWithUrls = await Promise.all(documents.map(async (d) => ({ ...d, downloadUrl: await presignGetUrl(d.storageKey) })));
 
@@ -163,7 +169,7 @@ export default async function VendorPage({ params }: PageProps<"/vendors/[id]">)
         </section>
       </div>
 
-      {canEdit && editRole && <VendorProfileForm vendor={vendor} heads={await fetchHeads(session.userId, editRole)} />}
+      {canEdit && editRole && <VendorProfileForm vendor={vendor} heads={editableHeads} />}
 
       <section className="flex flex-col gap-2">
         <h2 className="text-sm font-medium">Payment history</h2>

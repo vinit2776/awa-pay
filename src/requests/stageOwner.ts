@@ -15,5 +15,7 @@ export const STAGE_OWNER_ROLE: Record<Stage, Role | null> = {
   on_hold: "approver",
   paid: null,
   rejected: null,
+  // The vendor owes the tax invoice, and the requester is who chases it.
+  awaiting_invoice: "requester",
   withdrawn: null,
 };

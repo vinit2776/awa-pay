@@ -2,7 +2,7 @@
 // components can use it without pulling drizzle into the browser bundle.
 // tests/ui.test.ts pins STAGES to requestStageEnum so the two can't drift.
 
-export const STAGES = ["raised", "awaiting_approval", "with_accounts", "to_pay", "paid", "on_hold", "rejected", "withdrawn"] as const;
+export const STAGES = ["raised", "awaiting_approval", "with_accounts", "to_pay", "paid", "on_hold", "rejected", "withdrawn", "awaiting_invoice"] as const;
 export type Stage = (typeof STAGES)[number];
 
 export const STAGE_LABEL: Record<Stage, string> = {
@@ -14,6 +14,7 @@ export const STAGE_LABEL: Record<Stage, string> = {
   on_hold: "On hold",
   rejected: "Rejected",
   withdrawn: "Withdrawn",
+  awaiting_invoice: "Invoice awaited",
 };
 
 export type Tone = "neutral" | "info" | "ok" | "warn" | "danger";
@@ -27,6 +28,9 @@ export const STAGE_TONE: Record<Stage, Tone> = {
   on_hold: "warn",
   rejected: "danger",
   withdrawn: "neutral",
+  // An advance has gone out and the bill now waits on the requester for
+  // the final invoice — nothing moves until they attach it.
+  awaiting_invoice: "warn",
 };
 
 // The five lifecycle stages a request moves along (AGENTS.md "The
@@ -41,10 +45,14 @@ const TRACK: { stage: Stage; label: string }[] = [
   { stage: "paid", label: "Paid" },
 ];
 
+// awaiting_invoice sits on To pay: an advance was paid from that desk, and
+// attaching the invoice returns the request there for the balance
+// (transitions.attachInvoice → to_pay).
 const OFF_TRACK: Partial<Record<Stage, { at: Stage; state: StepState }>> = {
   on_hold: { at: "awaiting_approval", state: "paused" },
   rejected: { at: "awaiting_approval", state: "stopped" },
   withdrawn: { at: "raised", state: "stopped" },
+  awaiting_invoice: { at: "to_pay", state: "paused" },
 };
 
 export type StepState = "done" | "current" | "paused" | "stopped" | "todo";

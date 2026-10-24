@@ -1,0 +1,1 @@
+ALTER TYPE "public"."request_stage" ADD VALUE 'awaiting_invoice';

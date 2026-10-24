@@ -1,5 +1,6 @@
 import { Resend } from "resend";
 import { EMAIL_FROM, RESEND_API_KEY } from "./env";
+import { splitDeliverable } from "./recipientFilter";
 
 const SEND_TIMEOUT_MS = 8_000;
 
@@ -17,20 +18,27 @@ export type EmailMessage = { to: string[]; subject: string; text: string };
 // in Vercel's own log capture — a real health surface with a status
 // table is slice 4's job, not built here.
 export async function sendEmail(message: EmailMessage): Promise<void> {
-  if (message.to.length === 0) {
+  // Reserved-domain addresses (test fixtures, walkthrough accounts) can never
+  // be delivered; drop them first so they cost no send and no bounce. Logged,
+  // never silent (rule 5) — a real recipient landing here would be visible.
+  const { deliverable, dropped } = splitDeliverable(message.to);
+  if (dropped.length > 0) {
+    console.error("[notifications] dropped undeliverable (reserved-domain) recipients:", message.subject, dropped);
+  }
+  if (deliverable.length === 0) {
     return;
   }
   if (!client || !EMAIL_FROM) {
-    console.error("[notifications] no RESEND_API_KEY/EMAIL_FROM configured — suppressed:", message.subject, message.to);
+    console.error("[notifications] no RESEND_API_KEY/EMAIL_FROM configured — suppressed:", message.subject, deliverable);
     return;
   }
 
   try {
     await Promise.race([
-      client.emails.send({ from: EMAIL_FROM, to: message.to, subject: message.subject, text: message.text }),
+      client.emails.send({ from: EMAIL_FROM, to: deliverable, subject: message.subject, text: message.text }),
       new Promise((_resolve, reject) => setTimeout(() => reject(new Error("send timed out")), SEND_TIMEOUT_MS)),
     ]);
   } catch (err) {
-    console.error("[notifications] send failed:", message.subject, message.to, err);
+    console.error("[notifications] send failed:", message.subject, deliverable, err);
   }
 }

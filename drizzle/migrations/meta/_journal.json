@@ -162,6 +162,27 @@
       "when": 1788700600000,
       "tag": "0022_role_grant_requester_check",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1789802499240,
+      "tag": "0023_request_stage_add_awaiting_invoice",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1789802536641,
+      "tag": "0024_advance_and_part_payment",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1789804479343,
+      "tag": "0025_request_update_requester_company_check",
+      "breakpoints": true
     }
   ]
 }

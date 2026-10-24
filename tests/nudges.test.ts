@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { eq, inArray } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { closeOwnerConnection, dbOwner } from "../scripts/db-owner";
+import { cleanupFixturesForNonce } from "../scripts/fixtures";
 import { withGrantScope } from "../src/db/runtime";
-import { comment, department, event, nudge, query, request, requestFile, roleGrant, user } from "../src/db/schema";
+import { department, event, nudge, roleGrant, user } from "../src/db/schema";
 import { hashSecret } from "../src/auth/password";
 import { sendNudge } from "../src/conversation/nudgesCore";
 import { submitRequest, type Attachment } from "../src/requests/captureCore";
@@ -84,21 +85,11 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  const userIds = [requesterUser.id, approverUser.id, approverUserB.id];
-  const reqs = await dbOwner.select({ id: request.id }).from(request).where(inArray(request.departmentId, [deptA.id, deptB.id]));
-  const reqIds = reqs.map((r) => r.id);
-  if (reqIds.length > 0) {
-    await dbOwner.delete(comment).where(inArray(comment.requestId, reqIds));
-    await dbOwner.delete(query).where(inArray(query.requestId, reqIds));
-    await dbOwner.delete(nudge).where(inArray(nudge.requestId, reqIds));
-    await dbOwner.delete(event).where(inArray(event.requestId, reqIds));
-    await dbOwner.delete(requestFile).where(inArray(requestFile.requestId, reqIds));
-    await dbOwner.delete(request).where(inArray(request.id, reqIds));
+  try {
+    await cleanupFixturesForNonce(dbOwner, nonce);
+  } finally {
+    await closeOwnerConnection();
   }
-  await dbOwner.delete(roleGrant).where(inArray(roleGrant.userId, userIds));
-  await dbOwner.delete(department).where(inArray(department.id, [deptA.id, deptB.id]));
-  await dbOwner.delete(user).where(inArray(user.id, userIds));
-  await closeOwnerConnection();
 });
 
 describe("nudges (the phase-7 gate)", () => {

@@ -35,6 +35,11 @@ async function uploadDraft(draft: QueuedDraft): Promise<boolean> {
       vendor: draft.vendor,
       gstinOnBill: draft.gstinOnBill,
       note: draft.note,
+      kind: draft.kind ?? "invoice",
+      payNow: draft.payNow,
+      payNowReason: draft.payNowReason,
+      quotationNo: draft.quotationNo,
+      invoiceExpectedBy: draft.invoiceExpectedBy,
       attachments,
     });
     return Boolean(result?.ok);

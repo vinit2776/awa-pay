@@ -1,6 +1,6 @@
-// Extracted from CaptureForm.tsx (phase 14) so the offline draft-flush
-// path can downscale/hash a queued file identically to the online path,
-// rather than growing a second copy that quietly drifts.
+// Extracted from the capture screen (phase 14; now CaptureWizard.tsx) so the
+// offline draft-flush path can downscale/hash a queued file identically to
+// the online path, rather than growing a second copy that quietly drifts.
 
 const MAX_DIMENSION = 2000;
 const JPEG_QUALITY = 0.82;

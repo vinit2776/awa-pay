@@ -14,7 +14,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { company } from "./company";
 import { department } from "./department";
-import { holdSubReasonEnum, requestStageEnum } from "./enums";
+import { holdSubReasonEnum, requestKindEnum, requestStageEnum } from "./enums";
 import { user } from "./user";
 
 // Flags (ageing/query/due-date/repeat-amount/bank-changed, phase 12) are
@@ -64,6 +64,21 @@ export const request = pgTable(
     // the same migration for exactly that reason.
     fy: text("fy").generatedAlwaysAs(sql`financial_year(invoice_date)`),
     note: text("note"),
+    // Advances and part-payments (concept-v2.html section 09). amountMinor
+    // stays "the most this request can ever settle": the bill total for an
+    // invoice, the quoted total for an advance (which becomes the real
+    // invoice total when the tax invoice is attached).
+    kind: requestKindEnum("kind").notNull().default("invoice"),
+    // What the requester asked to have paid now. NULL = the whole amount.
+    payNowMinor: bigint("pay_now_minor", { mode: "number" }),
+    payNowReason: text("pay_now_reason"),
+    // The quotation/proforma number on an advance. Deliberately NOT
+    // invoiceNo: invoiceKey is generated from invoiceNo and feeds the
+    // duplicate index, so a quotation number must never look like a tax
+    // invoice to it.
+    quotationNo: text("quotation_no"),
+    invoiceExpectedBy: date("invoice_expected_by"),
+    invoiceAttachedAt: timestamp("invoice_attached_at", { withTimezone: true }),
     closeReason: text("close_reason"),
     holdReviewOn: date("hold_review_on"),
     holdSubReason: holdSubReasonEnum("hold_sub_reason"),
@@ -97,6 +112,11 @@ export const request = pgTable(
     index("request_raised_by_idx").on(table.raisedBy),
     index("request_linked_request_idx").on(table.linkedRequest),
     check("request_amount_minor_positive_check", sql`${table.amountMinor} > 0`),
+    check(
+      "request_pay_now_within_total_check",
+      sql`${table.payNowMinor} IS NULL OR (${table.payNowMinor} > 0 AND ${table.payNowMinor} <= ${table.amountMinor})`,
+    ),
+    check("request_advance_needs_pay_now_check", sql`${table.kind} <> 'advance' OR ${table.payNowMinor} IS NOT NULL`),
     // AGENTS.md rule 7, verbatim: "A partial unique index on (vendor_key,
     // invoice_key, fy) WHERE stage = 'paid'." The actual, unbypassable
     // guarantee — a UI lookup or an application-layer check can't stop two

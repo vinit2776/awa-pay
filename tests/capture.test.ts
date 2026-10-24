@@ -1,10 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import { eq, inArray } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { closeOwnerConnection, dbOwner } from "../scripts/db-owner";
+import { cleanupFixturesForNonce } from "../scripts/fixtures";
 import { hashSecret } from "../src/auth/password";
 import { UnauthorizedGrantError, withGrantScope } from "../src/db/runtime";
-import { department, event, request, requestFile, roleGrant, user } from "../src/db/schema";
+import { department, event, requestFile, roleGrant, user } from "../src/db/schema";
 import { computeEventHash } from "../src/events/hash";
 import { parseAmountToMinor } from "../src/lib/money";
 import { submitRequest, type Attachment } from "../src/requests/captureCore";
@@ -77,21 +78,11 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  const requests = await dbOwner
-    .select({ id: request.id })
-    .from(request)
-    .where(inArray(request.departmentId, [deptA.id, deptB.id]));
-  const requestIds = requests.map((r) => r.id);
-
-  if (requestIds.length > 0) {
-    await dbOwner.delete(event).where(inArray(event.requestId, requestIds));
-    await dbOwner.delete(requestFile).where(inArray(requestFile.requestId, requestIds));
-    await dbOwner.delete(request).where(inArray(request.id, requestIds));
+  try {
+    await cleanupFixturesForNonce(dbOwner, nonce);
+  } finally {
+    await closeOwnerConnection();
   }
-  await dbOwner.delete(roleGrant).where(eq(roleGrant.userId, requesterUser.id));
-  await dbOwner.delete(department).where(inArray(department.id, [deptA.id, deptB.id]));
-  await dbOwner.delete(user).where(eq(user.id, requesterUser.id));
-  await closeOwnerConnection();
 });
 
 describe("capture (the phase-3 gate)", () => {
